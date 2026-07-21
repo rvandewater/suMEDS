@@ -2,40 +2,45 @@ name: Deploy MkDocs to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
-      - development
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  pages:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run mkdocs build --strict
+      - uses: actions/configure-pages@v6
+      - name: Package Pages artifact
+        run: tar --dereference --hard-dereference --directory site -cvf "$RUNNER_TEMP/artifact.tar" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    permissions:
-      pages: write
-      id-token: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: development # Specify the branch to check out
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install dependencies
-        run: pip install .[docs]
-      - name: Build MkDocs site
-        run: mkdocs build
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-      - id: deployment
-        uses: actions/deploy-pages@v4
-        with:
-          source: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
