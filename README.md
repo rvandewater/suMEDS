@@ -1,12 +1,13 @@
 # suMEDS
-
-`suMEDS` creates a compact code catalog for defining tasks on very large
+> [!WARNING]
+> This package is in early development and is human-guided, but AI-agent-generated. It is not yet reviewed for production use. Please report issues and suggestions.
+>
+`suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for defining tasks on
 [Medical Event Data Standard (MEDS)](https://github.com/Medical-Event-Data-Standard/meds)
 datasets. It joins canonical descriptions and parent codes to event and unique-subject
 counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
 
-Polars scans, aggregations, joins, and writes stay lazy. Patient-level rows are never
-collected into Python memory.
+Polars scans, aggregations, joins, and writes stay lazy. This should mean that it could run with little resources on large MEDS datasets.
 
 ## Install and run
 
