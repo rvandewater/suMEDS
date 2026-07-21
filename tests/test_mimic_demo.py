@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from meds_summary import SummaryConfig, summarize
+from suMEDS import SummaryConfig, summarize
 
 
 DEMO = Path(__file__).parents[1] / "MIMICIV_DEMO" / "MEDS_cohort"

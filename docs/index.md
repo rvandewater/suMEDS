@@ -1,6 +1,6 @@
-# meds-summary
+# suMEDS
 
-`meds-summary` scans a MEDS dataset and writes the code information needed to
+`suMEDS` scans a MEDS dataset and writes the code information needed to
 discover and define downstream tasks:
 
 - canonical code descriptions, parent codes, modifiers, and extension metadata;

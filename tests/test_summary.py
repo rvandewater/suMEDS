@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from meds_summary import SummaryConfig, summarize
+from suMEDS import SummaryConfig, summarize
 
 
 def test_bucket_masks_metadata_and_counts_subject_union(

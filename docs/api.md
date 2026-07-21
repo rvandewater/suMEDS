@@ -1,6 +1,6 @@
 # Python API
 
-All public objects can be imported directly from `meds_summary`.
+All public objects can be imported directly from `sumeds`.
 
 ## High-level API
 
@@ -21,7 +21,7 @@ absolute output path. Library callers receive the original `ValueError`,
 `FileNotFoundError`, MEDS schema, or Polars exception.
 
 ```python
-from meds_summary import SummaryConfig, summarize
+from sumeds import SummaryConfig, summarize
 
 output = summarize(
     "/data/MEDS",

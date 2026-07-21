@@ -1,6 +1,6 @@
-# meds-summary
+# suMEDS
 
-`meds-summary` creates a compact code catalog for defining tasks on very large
+`suMEDS` creates a compact code catalog for defining tasks on very large
 [Medical Event Data Standard (MEDS)](https://github.com/Medical-Event-Data-Standard/meds)
 datasets. It joins canonical descriptions and parent codes to event and unique-subject
 counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
@@ -12,7 +12,7 @@ collected into Python memory.
 
 ```bash
 uv sync
-uv run meds-summary MIMICIV_DEMO/MEDS_cohort \
+uv run suMEDS MIMICIV_DEMO/MEDS_cohort \
   --output code-summary.parquet \
   --min-subjects 20
 ```
@@ -30,9 +30,9 @@ privacy:
 ```
 
 ```bash
-uv run meds-summary /path/to/MEDS -o summary.parquet -c examples/summary.yaml
+uv run suMEDS /path/to/MEDS -o summary.parquet -c examples/summary.yaml
 # The suffix selects CSV or JSON instead:
-uv run meds-summary /path/to/MEDS -o summary.json -c examples/summary.yaml
+uv run suMEDS /path/to/MEDS -o summary.json -c examples/summary.yaml
 ```
 
 CLI flags override YAML. The defaults bucket codes seen in fewer than 20 unique
@@ -41,7 +41,7 @@ subjects and retain exact counts.
 ## Python API
 
 ```python
-from meds_summary import SummaryConfig, summarize
+from sumeds import SummaryConfig, summarize
 
 path = summarize(
     "/path/to/MEDS",

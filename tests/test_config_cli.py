@@ -5,8 +5,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from meds_summary import SummaryConfig
-from meds_summary.cli import main
+from suMEDS import SummaryConfig
+from suMEDS.cli import main
 
 
 def test_yaml_and_cli_override(meds_dataset: Path, tmp_path: Path, capsys) -> None:

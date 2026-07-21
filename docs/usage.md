@@ -22,7 +22,7 @@ conformance checks such as event order.
 ## CLI
 
 ```bash
-uv run meds-summary MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
+uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 ```
 
 | Option | Meaning |
@@ -46,20 +46,20 @@ prevent dataset corruption.
 Global summary with exact common-code counts:
 
 ```bash
-uv run meds-summary /data/MEDS -o summary.parquet --min-subjects 20
+uv run suMEDS /data/MEDS -o summary.parquet --min-subjects 20
 ```
 
 Suppress rare rows rather than combining them:
 
 ```bash
-uv run meds-summary /data/MEDS -o summary.parquet \
+uv run suMEDS /data/MEDS -o summary.parquet \
   --min-subjects 25 --rare-code-action drop
 ```
 
 Compute release cells independently per official split:
 
 ```bash
-uv run meds-summary /data/MEDS -o summary-by-split.parquet \
+uv run suMEDS /data/MEDS -o summary-by-split.parquet \
   --per-split --min-subjects 20 --round-counts-to 5
 ```
 

@@ -1,4 +1,4 @@
-"""Command-line interface for :mod:`meds_summary`."""
+"""Command-line interface for :mod:`sumeds`."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the public CLI parser."""
 
     parser = argparse.ArgumentParser(
-        prog="meds-summary",
+        prog="suMEDS",
         description="Create a lazy, privacy-aware MEDS code occurrence catalog.",
     )
     parser.add_argument("dataset_root", type=Path, help="MEDS dataset root")
@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--round-counts-to", type=int, help="round released counts to this multiple"
     )
-    parser.add_argument("--version", action="version", version=version("meds-summary"))
+    parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
 
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         output = summarize(args.dataset_root, args.output, config)
     except Exception as exc:  # CLI boundary: library callers retain typed exceptions.
-        parser.exit(1, f"meds-summary: error: {exc}\n")
+        parser.exit(1, f"suMEDS: error: {exc}\n")
 
     print(f"Wrote {output}")
     return 0

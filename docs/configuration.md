@@ -69,6 +69,6 @@ CLI option > YAML value > package default
 For example, this keeps every YAML option except the threshold:
 
 ```bash
-uv run meds-summary /data/MEDS -o summary.parquet \
+uv run suMEDS /data/MEDS -o summary.parquet \
   -c summary.yaml --min-subjects 30
 ```
