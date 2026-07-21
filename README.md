@@ -72,6 +72,7 @@ YAML reference, output schema, Python API, and privacy limitations.
 ## Development
 
 ```bash
+uv run pre-commit run --all-files
 uv run pytest
 uv run mkdocs build --strict
 ```

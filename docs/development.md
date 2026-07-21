@@ -7,9 +7,14 @@ build, and commands.
 
 ```bash
 uv sync
+uv run pre-commit install
+uv run pre-commit run --all-files
 uv run pytest
 uv run mkdocs build --strict
 ```
+
+A plain `pre-commit run` checks only staged files, so hooks legitimately skip
+when nothing matching is staged. Use `--all-files` for a full repository check.
 
 Build the distribution with:
 
