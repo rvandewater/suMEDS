@@ -1,0 +1,8 @@
+summary:
+  per_split: false
+
+privacy:
+  min_subjects: 20
+  rare_code_action: bucket
+  rare_code_label: __RARE__
+  round_counts_to: 5

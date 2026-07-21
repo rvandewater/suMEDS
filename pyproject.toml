@@ -1,0 +1,37 @@
+[project]
+name = "meds-summary"
+version = "0.1.0"
+description = "Lazy, privacy-aware code occurrence summaries for MEDS datasets"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["MEDS", "healthcare", "Polars", "privacy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+authors = [
+    { name = "Robin van de Water", email = "r.p.vandewater@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "meds>=0.4.1,<0.5",
+    "polars>=1.30",
+    "pyarrow>=15",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+meds-summary = "meds_summary.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.15,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mkdocs>=1.6",
+    "pytest>=8",
+]

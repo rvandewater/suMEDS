@@ -1,0 +1,83 @@
+# Python API
+
+All public objects can be imported directly from `meds_summary`.
+
+## High-level API
+
+### `summarize`
+
+```python
+summarize(
+    root: str | Path,
+    output: str | Path,
+    config: SummaryConfig | None = None,
+) -> Path
+```
+
+Validates required MEDS metadata and shard schemas, computes occurrence counts,
+applies the privacy policy, and atomically writes the format selected by the
+`.parquet`, `.csv`, `.json`, `.jsonl`, or `.ndjson` suffix. It returns the
+absolute output path. Library callers receive the original `ValueError`,
+`FileNotFoundError`, MEDS schema, or Polars exception.
+
+```python
+from meds_summary import SummaryConfig, summarize
+
+output = summarize(
+    "/data/MEDS",
+    "task-catalog.parquet",
+    SummaryConfig(
+        per_split=True,
+        min_subjects=20,
+        rare_code_action="bucket",
+        round_counts_to=5,
+    ),
+)
+```
+
+### `SummaryConfig`
+
+```python
+SummaryConfig(
+    per_split: bool = False,
+    min_subjects: int = 20,
+    rare_code_action: str = "bucket",
+    rare_code_label: str = "__RARE__",
+    round_counts_to: int | None = None,
+)
+```
+
+`SummaryConfig.from_yaml(path)` loads strict YAML.
+`config.with_overrides(...)` creates an updated immutable copy and ignores
+`None` values, which is useful for CLI layers.
+
+## Lazy building blocks
+
+### `scan_events(root, modifiers=()) -> polars.LazyFrame`
+
+Validates every event-shard footer and returns a projection containing only
+`subject_id`, `code`, and requested modifiers.
+
+### `scan_code_metadata(root) -> polars.LazyFrame`
+
+Returns the canonical code metadata scan. Missing optional `description` and
+`parent_codes` fields are added as typed null columns.
+
+### `scan_subject_splits(root) -> polars.LazyFrame`
+
+Returns canonical `subject_id` and `split` columns.
+
+### `code_occurrences(events, keys) -> polars.LazyFrame`
+
+Builds lazy `event_count` and `subject_count` aggregations for arbitrary code
+keys. It does not apply privacy filtering by itself.
+
+### Metadata helpers
+
+- `dataset_root(path) -> Path`
+- `read_dataset_metadata(root) -> dict`
+- `code_modifier_columns(metadata) -> list[str]`
+- `event_files(root) -> list[Path]`
+
+These are small public helpers for consumers that need the same validated MEDS
+paths and declarations without running a complete summary.

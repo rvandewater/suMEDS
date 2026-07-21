@@ -1,0 +1,453 @@
+2025-01-13 11:02:46.237 | INFO     | MEDS_transforms.utils:stage_init:73 - Running split_and_shard_subjects with the following configuration:
+input_dir: ${oc.env:PRE_MEDS_DIR}
+cohort_dir: ${oc.env:MEDS_COHORT_DIR}
+_default_description: 'This is a MEDS pipeline ETL. Please set a more detailed description
+  at the top of your specific pipeline
+
+  configuration file.'
+log_dir: ${stage_cfg.output_dir}/.logs
+do_overwrite: false
+seed: 1
+stages:
+- shard_events
+- split_and_shard_subjects
+- convert_to_sharded_events
+- merge_to_MEDS_cohort
+- extract_code_metadata
+- finalize_MEDS_metadata
+- finalize_MEDS_data
+stage_configs:
+  shard_events:
+    row_chunksize: 200000000
+    infer_schema_length: 999999999
+    data_input_dir: ${input_dir}
+  split_and_shard_subjects:
+    is_metadata: true
+    output_dir: ${cohort_dir}/metadata
+    n_subjects_per_shard: 1000
+    external_splits_json_fp: null
+    split_fracs:
+      train: 0.8
+      tuning: 0.1
+      held_out: 0.1
+  convert_to_sharded_events:
+    do_dedup_text_and_numeric: true
+  merge_to_MEDS_cohort:
+    unique_by: '*'
+    additional_sort_by: null
+  extract_code_metadata:
+    is_metadata: true
+    description_separator: '
+
+      '
+  finalize_MEDS_metadata:
+    is_metadata: true
+    do_retype: true
+  finalize_MEDS_data:
+    do_retype: true
+worker: 0
+polling_time: 300
+stage: split_and_shard_subjects
+stage_cfg: ${oc.create:${populate_stage:${stage}, ${input_dir}, ${cohort_dir}, ${stages},
+  ${stage_configs}}}
+etl_metadata:
+  pipeline_name: ???
+  dataset_name: ${oc.env:DATASET_NAME}
+  dataset_version: ${oc.env:DATASET_VERSION}
+  package_name: ${get_package_name:}
+  package_version: ${get_package_version:}
+etl_metadata.pipeline_name: extract
+description: "This pipeline extracts a dataset in longitudinal, sparse form from an\
+  \ input dataset meeting\nselect criteria and converts them to the MEDS format.\n\
+  \nThis pipeline is for the ${etl_metadata.dataset_name} dataset version ${etl_metadata.dataset_version}.\n\
+  \nKey variables for this pipeline are\n  - `input_dir=$PATH_TO_INPUT_DIR`\n  - `cohort_dir=$PATH_TO_OUTPUT_DIR`.\n\
+  \  - `event_conversion_config_fp=$PATH_TO_EVENT_CONVERSION_CONFIG_FP`\n\nSee the\
+  \ MEDS-Transforms Extract documentation for configuration file details."
+event_conversion_config_fp: ${oc.env:EVENT_CONVERSION_CONFIG_FP}
+shards_map_fp: ${cohort_dir}/metadata/.shards.json
+parallelize:
+  n_workers: ${oc.env:N_WORKERS}
+  launcher: joblib
+
+2025-01-13 11:02:46.249 | DEBUG    | MEDS_transforms.utils:stage_init:97 - Stage config:
+is_metadata: true
+output_dir: /Users/robin/Documents/datasets/meds/MEDS_cohort/metadata
+n_subjects_per_shard: 1000
+external_splits_json_fp: null
+split_fracs:
+  train: 0.8
+  tuning: 0.1
+  held_out: 0.1
+data_input_dir: /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events
+metadata_input_dir: /Users/robin/Documents/datasets/meds/pre_MEDS/metadata
+reducer_output_dir: /Users/robin/Documents/datasets/meds/MEDS_cohort/split_and_shard_subjects
+train_only: true
+
+Paths: (checkbox indicates if it exists)
+  - input_dir: ✅ /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events
+  - output_dir: ✅ /Users/robin/Documents/datasets/meds/MEDS_cohort/metadata
+  - metadata_input_dir: ❌ /Users/robin/Documents/datasets/meds/pre_MEDS/metadata
+2025-01-13 11:02:46.250 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:215 - Reading event conversion config from /opt/miniconda3/envs/meds-vis/lib/python3.12/site-packages/MIMIC_IV_MEDS/configs/event_configs.yaml (needed for subject ID columns)
+2025-01-13 11:02:46.273 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:219 - Event conversion config:
+subject_id_col: subject_id
+hosp/admissions:
+  ed_registration:
+    code: ED_REGISTRATION
+    time: col(edregtime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+  ed_out:
+    code: ED_OUT
+    time: col(edouttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+  admission:
+    code:
+    - HOSPITAL_ADMISSION
+    - col(admission_type)
+    - col(admission_location)
+    time: col(admittime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    insurance: insurance
+    language: language
+    marital_status: marital_status
+    race: race
+    hadm_id: hadm_id
+  discharge:
+    code:
+    - HOSPITAL_DISCHARGE
+    - col(discharge_location)
+    time: col(dischtime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+hosp/diagnoses_icd:
+  diagnosis:
+    code:
+    - DIAGNOSIS
+    - ICD
+    - col(icd_version)
+    - col(icd_code)
+    hadm_id: hadm_id
+    time: col(hadm_discharge_time)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    _metadata:
+      hosp/d_icd_diagnoses:
+        description: long_title
+        parent_codes: ICD{icd_version}CM/{norm_icd_code}
+hosp/drgcodes:
+  drg:
+    code:
+    - DRG
+    - col(drg_type)
+    - col(drg_code)
+    - col(description)
+    hadm_id: hadm_id
+    time: col(hadm_discharge_time)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    drg_severity: drg_severity
+    drg_mortality: drg_mortality
+hosp/emar:
+  medication:
+    code:
+    - MEDICATION
+    - col(medication)
+    - col(event_txt)
+    time: col(charttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    emar_id: emar_id
+    emar_seq: emar_seq
+hosp/hcpcsevents:
+  hcpcs:
+    code:
+    - HCPCS
+    - col(short_description)
+    hadm_id: hadm_id
+    time: col(chartdate)
+    time_format: '%Y-%m-%d'
+    _metadata:
+      hosp/d_hcpcs:
+        description: long_description
+        possibly_cpt_code: code
+hosp/labevents:
+  lab:
+    code:
+    - LAB
+    - col(itemid)
+    - col(valueuom)
+    hadm_id: hadm_id
+    time: col(charttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    numeric_value: valuenum
+    text_value: value
+    priority: priority
+    _metadata:
+      d_labitems_to_loinc:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+        valueuom: valueuom
+hosp/omr:
+  omr:
+    code: col(result_name)
+    text_value: col(result_value)
+    time: col(chartdate)
+    time_format: '%Y-%m-%d'
+hosp/patients:
+  gender:
+    code:
+    - GENDER
+    - col(gender)
+    time: null
+  dob:
+    code: MEDS_BIRTH
+    time: col(year_of_birth)
+    time_format: '%Y'
+  death:
+    code: MEDS_DEATH
+    time: col(dod)
+    time_format:
+    - '%Y-%m-%d %H:%M:%S'
+    - '%Y-%m-%d'
+hosp/pharmacy:
+  medication_start:
+    code:
+    - MEDICATION
+    - START
+    - col(medication)
+    time: col(starttime)
+    route: route
+    frequency: frequency
+    doses_per_24_hrs: doses_per_24_hrs
+    poe_id: poe_id
+    time_format:
+    - '%Y-%m-%d %H:%M:%S'
+    - '%Y-%m-%d'
+  medication_stop:
+    code:
+    - MEDICATION
+    - STOP
+    - col(medication)
+    time: col(stoptime)
+    poe_id: poe_id
+    time_format:
+    - '%Y-%m-%d %H:%M:%S'
+    - '%Y-%m-%d'
+hosp/procedures_icd:
+  procedure:
+    code:
+    - PROCEDURE
+    - ICD
+    - col(icd_version)
+    - col(icd_code)
+    hadm_id: hadm_id
+    time: col(chartdate)
+    time_format: '%Y-%m-%d'
+    _metadata:
+      hosp/d_icd_procedures:
+        description: long_title
+        parent_codes:
+        - ICD{icd_version}Proc/{norm_icd_code}:
+            icd_version: '9'
+        - ICD{icd_version}PCS/{norm_icd_code}:
+            icd_version: '10'
+hosp/transfers:
+  transfer:
+    code:
+    - TRANSFER_TO
+    - col(eventtype)
+    - col(careunit)
+    time: col(intime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+icu/icustays:
+  icu_admission:
+    code:
+    - ICU_ADMISSION
+    - col(first_careunit)
+    time: col(intime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+  icu_discharge:
+    code:
+    - ICU_DISCHARGE
+    - col(last_careunit)
+    time: col(outtime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+icu/chartevents:
+  event:
+    code:
+    - LAB
+    - col(itemid)
+    - col(valueuom)
+    time: col(charttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    numeric_value: valuenum
+    text_value: value
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    _metadata:
+      d_labitems_to_loinc:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+        valueuom: valueuom
+icu/procedureevents:
+  start:
+    code:
+    - PROCEDURE
+    - START
+    - col(itemid)
+    time: col(starttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    _metadata:
+      proc_datetimeevents:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+      proc_itemid:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+  end:
+    code:
+    - PROCEDURE
+    - END
+    - col(itemid)
+    time: col(endtime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    _metadata:
+      proc_datetimeevents:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+      proc_itemid:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+icu/inputevents:
+  input_start:
+    code:
+    - INFUSION_START
+    - col(itemid)
+    time: col(starttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    order_id: orderid
+    link_order_id: linkorderid
+    numeric_value: rate
+    unit: rateuom
+    ordercategorydescription: ordercategorydescription
+    _metadata:
+      inputevents_to_rxnorm:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+  input_end:
+    code:
+    - INFUSION_END
+    - col(itemid)
+    time: col(endtime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    order_id: orderid
+    link_order_id: linkorderid
+    numeric_value: amount
+    ordercategorydescription: ordercategorydescription
+    statusdescription: statusdescription
+    unit: amountuom
+    _metadata:
+      inputevents_to_rxnorm:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+  subject_weight:
+    code:
+    - SUBJECT_WEIGHT_AT_INFUSION
+    - KG
+    time: col(starttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    numeric_value: patientweight
+icu/outputevents:
+  output:
+    code:
+    - SUBJECT_FLUID_OUTPUT
+    - col(itemid)
+    - col(valueuom)
+    time: col(charttime)
+    time_format: '%Y-%m-%d %H:%M:%S'
+    hadm_id: hadm_id
+    icustay_id: stay_id
+    numeric_value: value
+    _metadata:
+      outputevents_to_loinc:
+        description:
+        - omop_concept_name
+        - label
+        itemid: itemid (omop_source_code)
+        valueuom: unitname
+        parent_codes: '{omop_vocabulary_id}/{omop_concept_code}'
+
+2025-01-13 11:02:46.274 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/admissions files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/admissions/[0-275).parquet
+2025-01-13 11:02:46.274 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/diagnoses_icd files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/diagnoses_icd/[0-4506).parquet
+2025-01-13 11:02:46.275 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/drgcodes files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/drgcodes/[0-454).parquet
+2025-01-13 11:02:46.275 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/emar files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/emar/[0-35835).parquet
+2025-01-13 11:02:46.275 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/hcpcsevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/hcpcsevents/[0-61).parquet
+2025-01-13 11:02:46.275 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/labevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/labevents/[0-107727).parquet
+2025-01-13 11:02:46.275 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/omr files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/omr/[0-2964).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/patients files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/patients/[0-100).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/pharmacy files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/pharmacy/[0-15306).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/procedures_icd files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/procedures_icd/[0-722).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from hosp/transfers files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/hosp/transfers/[0-1190).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from icu/icustays files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/icu/icustays/[0-140).parquet
+2025-01-13 11:02:46.276 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from icu/chartevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/icu/chartevents/[0-668862).parquet
+2025-01-13 11:02:46.277 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from icu/procedureevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/icu/procedureevents/[0-1468).parquet
+2025-01-13 11:02:46.277 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from icu/inputevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/icu/inputevents/[0-20404).parquet
+2025-01-13 11:02:46.277 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:230 - Reading subject IDs from icu/outputevents files:
+  - /Users/robin/Documents/datasets/meds/MEDS_cohort/shard_events/icu/outputevents/[0-9362).parquet
+2025-01-13 11:02:46.277 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:239 - Joining all subject IDs from 16 dataframes
+2025-01-13 11:02:46.437 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:247 - Found 100 unique subject IDs of type int64
+2025-01-13 11:02:46.441 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:262 - Sharding and splitting subjects
+2025-01-13 11:02:46.447 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:shard_subjects:164 - Split train/0 has 80 subjects.
+2025-01-13 11:02:46.447 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:shard_subjects:164 - Split tuning/0 has 10 subjects.
+2025-01-13 11:02:46.447 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:shard_subjects:164 - Split held_out/0 has 10 subjects.
+2025-01-13 11:02:46.448 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:273 - Writing sharded subjects to /Users/robin/Documents/datasets/meds/MEDS_cohort/metadata/.shards.json
+2025-01-13 11:02:46.448 | INFO     | MEDS_transforms.extract.split_and_shard_subjects:main:276 - Done writing sharded subjects
