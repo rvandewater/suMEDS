@@ -15,7 +15,8 @@ Polars scans, aggregations, joins, and writes stay lazy. This should mean that i
 uv sync
 uv run suMEDS tests/resources/MIMICIV_DEMO/MEDS_cohort \
   --output code-summary.parquet \
-  --min-subjects 20
+  --min-subjects 20 \
+  --split-columns
 ```
 
 Or use YAML:
@@ -23,7 +24,7 @@ Or use YAML:
 ```yaml
 summary:
   per_split: false
-  split_columns: false
+  split_columns: true
 privacy:
   min_subjects: 20
   min_split_subjects: 1
