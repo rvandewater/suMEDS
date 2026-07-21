@@ -1,8 +1,10 @@
 summary:
   per_split: false
+  split_columns: false
 
 privacy:
   min_subjects: 20
+  min_split_subjects: 1
   rare_code_action: bucket
   rare_code_label: __RARE__
   round_counts_to: 5

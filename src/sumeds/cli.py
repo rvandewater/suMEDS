@@ -31,7 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--per-split", action=argparse.BooleanOptionalAction, default=None
     )
     parser.add_argument(
+        "--split-columns",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add per-split count columns alongside totals",
+    )
+    parser.add_argument(
         "--min-subjects", type=int, help="minimum unique subjects per released code"
+    )
+    parser.add_argument(
+        "--min-split-subjects",
+        type=int,
+        help="minimum unique subjects per visible wide split cell",
     )
     parser.add_argument("--rare-code-action", choices=("bucket", "drop"))
     parser.add_argument("--rare-code-label", help="label used by bucket mode")
@@ -53,7 +64,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         config = config.with_overrides(
             per_split=args.per_split,
+            split_columns=args.split_columns,
             min_subjects=args.min_subjects,
+            min_split_subjects=args.min_split_subjects,
             rare_code_action=args.rare_code_action,
             rare_code_label=args.rare_code_label,
             round_counts_to=args.round_counts_to,

@@ -6,7 +6,7 @@ discover and define downstream tasks:
 - canonical code descriptions, parent codes, modifiers, and extension metadata;
 - event occurrence counts;
 - unique-subject occurrence counts;
-- optional counts per canonical subject split;
+- optional counts per canonical subject split, as rows or columns beside totals;
 - configurable masking or removal of rare code cells.
 
 ## Data flow

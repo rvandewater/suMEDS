@@ -22,8 +22,10 @@ Or use YAML:
 ```yaml
 summary:
   per_split: false
+  split_columns: false
 privacy:
   min_subjects: 20
+  min_split_subjects: 1
   rare_code_action: bucket
   rare_code_label: __RARE__
   round_counts_to: 5
@@ -52,8 +54,10 @@ path = summarize(
 
 The output format is inferred from `.parquet`, `.csv`, or `.json` (with
 `.jsonl`/`.ndjson` also supported). It preserves all code-metadata extension columns and adds
-`event_count`, `subject_count`, and `is_masked`. With `per_split=True`, it also
-adds `split` using `metadata/subject_splits.parquet`.
+`event_count`, `subject_count`, and `is_masked`. `per_split=True` emits one row
+per split. `split_columns=True` keeps the total row and adds columns such as
+`event_count_train` and `subject_count_train` from `subject_splits.parquet`.
+Set `min_split_subjects` above 1 to suppress rare split-level cells.
 
 ## Documentation
 

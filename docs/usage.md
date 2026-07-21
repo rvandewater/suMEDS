@@ -8,7 +8,7 @@ MEDS_ROOT/
 └── metadata/
     ├── dataset.json
     ├── codes.parquet
-    └── subject_splits.parquet  # required only with --per-split
+    └── subject_splits.parquet  # required by either split-output mode
 ```
 
 Every event shard is validated against the official MEDS `DataSchema` from its
@@ -29,8 +29,10 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 |---|---|
 | `-o`, `--output PATH` | Required `.parquet`, `.csv`, or `.json` output |
 | `-c`, `--config PATH` | YAML configuration |
-| `--per-split`, `--no-per-split` | Override split grouping |
-| `--min-subjects N` | Minimum unique subjects for an unmasked row |
+| `--per-split`, `--no-per-split` | Emit one row per split instead of totals |
+| `--split-columns`, `--no-split-columns` | Add per-split columns alongside totals |
+| `--min-subjects N` | Minimum unique subjects for an unmasked total/row |
+| `--min-split-subjects N` | Minimum subjects for a visible wide split cell |
 | `--rare-code-action bucket\|drop` | Combine or omit rare rows |
 | `--rare-code-label TEXT` | Sentinel used for the bucket |
 | `--round-counts-to N` | Round released counts to a multiple |
@@ -63,6 +65,19 @@ uv run suMEDS /data/MEDS -o summary-by-split.parquet \
   --per-split --min-subjects 20 --round-counts-to 5
 ```
 
+Keep total counts and add one event/subject column pair per split:
+
+```bash
+uv run suMEDS /data/MEDS -o summary-wide.parquet \
+  --split-columns --min-subjects 20
+
+# Optional independent split-cell suppression:
+uv run suMEDS /data/MEDS -o summary-wide-private.parquet \
+  --split-columns --min-subjects 20 --min-split-subjects 10
+```
+
+The two split-output modes are mutually exclusive.
+
 ## Output formats
 
 The filename suffix selects the writer:
@@ -85,7 +100,9 @@ Parquet when exact nested types matter.
 | `parent_codes` | list[string], nullable | Vocabulary parents; null for masked rows |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
 | `event_count` | uint64 | Event rows in the release cell |
-| `subject_count` | uint64 | Distinct subjects in the release cell |
+| `subject_count` | uint64 | Distinct subjects in the release cell or total |
+| `event_count_<split>` | uint64, nullable | Split event count; null below `min_split_subjects` |
+| `subject_count_<split>` | uint64, nullable | Split subject count; null below `min_split_subjects` |
 | `is_masked` | boolean | Whether the row combines rare codes |
 
 Code modifier columns declared by `metadata/dataset.json` are part of the

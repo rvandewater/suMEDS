@@ -27,7 +27,7 @@ output = summarize(
     "/data/MEDS",
     "task-catalog.parquet",
     SummaryConfig(
-        per_split=True,
+        split_columns=True,
         min_subjects=20,
         rare_code_action="bucket",
         round_counts_to=5,
@@ -40,7 +40,9 @@ output = summarize(
 ```python
 SummaryConfig(
     per_split: bool = False,
+    split_columns: bool = False,
     min_subjects: int = 20,
+    min_split_subjects: int = 1,
     rare_code_action: str = "bucket",
     rare_code_label: str = "__RARE__",
     round_counts_to: int | None = None,
@@ -67,10 +69,12 @@ Returns the canonical code metadata scan. Missing optional `description` and
 
 Returns canonical `subject_id` and `split` columns.
 
-### `code_occurrences(events, keys) -> polars.LazyFrame`
+### `code_occurrences(events, keys, splits=()) -> polars.LazyFrame`
 
-Builds lazy `event_count` and `subject_count` aggregations for arbitrary code
-keys. It does not apply privacy filtering by itself.
+Builds lazy total and optional per-split `event_count` and `subject_count`
+aggregations for arbitrary code keys. Pass split names such as
+`["train", "held_out"]` when the frame has a `split` column. This low-level
+function does not apply privacy filtering by itself.
 
 ### Metadata helpers
 

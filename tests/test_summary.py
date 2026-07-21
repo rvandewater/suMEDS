@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from suMEDS import SummaryConfig, summarize
+from sumeds import SummaryConfig, summarize
 
 
 def test_bucket_masks_metadata_and_counts_subject_union(
@@ -60,15 +60,28 @@ def test_per_split_uses_subject_metadata(meds_dataset: Path, tmp_path: Path) -> 
         ("train", "A"),
         ("train", "B"),
     }
-    buckets = {row["split"]: row for row in result.filter("is_masked").to_dicts()}
-    assert (buckets["train"]["event_count"], buckets["train"]["subject_count"]) == (
-        1,
-        1,
+    assert result.filter(pl.col("is_masked")).is_empty()
+
+
+def test_split_columns_include_private_cells_and_totals(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(split_columns=True, min_subjects=2, min_split_subjects=2),
     )
-    assert (
-        buckets["held_out"]["event_count"],
-        buckets["held_out"]["subject_count"],
-    ) == (2, 1)
+    rows = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
+
+    assert rows["A"]["event_count"] == 3
+    assert rows["A"]["subject_count"] == 3
+    assert rows["A"]["event_count_train"] == 2
+    assert rows["A"]["subject_count_train"] == 2
+    assert rows["A"]["event_count_held_out"] is None
+    assert rows["A"]["subject_count_held_out"] is None
+    assert rows["B"]["event_count_train"] == 2
+    assert rows["C"]["event_count_train"] is None
+    assert rows["C"]["event_count_held_out"] is None
 
 
 @pytest.mark.parametrize(

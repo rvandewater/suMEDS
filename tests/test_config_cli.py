@@ -5,8 +5,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from suMEDS import SummaryConfig
-from suMEDS.cli import main
+from sumeds import SummaryConfig
+from sumeds.cli import main
 
 
 def test_yaml_and_cli_override(meds_dataset: Path, tmp_path: Path, capsys) -> None:
@@ -14,6 +14,7 @@ def test_yaml_and_cli_override(meds_dataset: Path, tmp_path: Path, capsys) -> No
     config_path.write_text(
         """summary:
   per_split: false
+  split_columns: false
 privacy:
   min_subjects: 3
   rare_code_action: drop
@@ -34,12 +35,18 @@ privacy:
                 str(config_path),
                 "--rare-code-action",
                 "bucket",
+                "--split-columns",
+                "--min-split-subjects",
+                "2",
             ]
         )
         == 0
     )
     assert f"Wrote {output}" in capsys.readouterr().out
-    assert pl.read_parquet(output)["code"].to_list() == ["A", "__RARE__"]
+    result = pl.read_parquet(output)
+    assert result["code"].to_list() == ["A", "__RARE__"]
+    assert "event_count_train" in result.columns
+    assert result["event_count_held_out"].null_count() == result.height
 
 
 def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:
@@ -52,5 +59,9 @@ def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:
         SummaryConfig.from_yaml(path)
     with pytest.raises(ValueError, match="positive integer"):
         SummaryConfig(min_subjects=0)
+    with pytest.raises(ValueError, match="min_split_subjects"):
+        SummaryConfig(min_split_subjects=0)
     with pytest.raises(ValueError, match="bucket.*drop"):
         SummaryConfig(rare_code_action="mask")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SummaryConfig(per_split=True, split_columns=True)

@@ -19,20 +19,24 @@ class SummaryConfig:
     """
 
     per_split: bool = False
+    split_columns: bool = False
     min_subjects: int = 20
+    min_split_subjects: int = 1
     rare_code_action: str = "bucket"
     rare_code_label: str = "__RARE__"
     round_counts_to: int | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.per_split, bool):
-            raise ValueError("per_split must be true or false")
-        if (
-            not isinstance(self.min_subjects, int)
-            or isinstance(self.min_subjects, bool)
-            or self.min_subjects < 1
+        if not isinstance(self.per_split, bool) or not isinstance(
+            self.split_columns, bool
         ):
-            raise ValueError("min_subjects must be a positive integer")
+            raise ValueError("per_split and split_columns must be true or false")
+        if self.per_split and self.split_columns:
+            raise ValueError("per_split and split_columns are mutually exclusive")
+        for name in ("min_subjects", "min_split_subjects"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         if self.rare_code_action not in {"bucket", "drop"}:
             raise ValueError("rare_code_action must be 'bucket' or 'drop'")
         if not self.rare_code_label:
@@ -59,8 +63,9 @@ class SummaryConfig:
         summary = _mapping(raw.get("summary"), "summary")
         privacy = _mapping(raw.get("privacy"), "privacy")
         allowed = {field.name for field in fields(cls)}
-        unknown = (set(summary) - {"per_split"}) | (
-            set(privacy) - (allowed - {"per_split"})
+        summary_options = {"per_split", "split_columns"}
+        unknown = (set(summary) - summary_options) | (
+            set(privacy) - (allowed - summary_options)
         )
         if unknown:
             raise ValueError(
