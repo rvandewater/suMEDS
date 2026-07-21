@@ -15,7 +15,7 @@ classifiers = [
 authors = [
     { name = "Robin van de Water", email = "r.p.vandewater@gmail.com" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.15"
 dependencies = [
     "meds>=0.4.1,<0.5",
     "polars>=1.30",
