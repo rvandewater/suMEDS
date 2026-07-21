@@ -1,5 +1,5 @@
 minimum_pre_commit_version: "4.0.0"
-exclude: ^MIMICIV_DEMO/
+exclude: ^(MIMICIV_DEMO|tests/resources/MIMICIV_DEMO)/
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

@@ -28,7 +28,7 @@ Unit tests create a tiny MEDS dataset with two shards, code modifiers, subject
 splits, and overlapping rare-code subjects. This catches the common but
 incorrect implementation that sums per-code subject counts.
 
-When `MIMICIV_DEMO/MEDS_cohort` exists, the integration test also validates the
+When `tests/resources/MIMICIV_DEMO/MEDS_cohort` exists, the integration test validates the
 real MEDS 0.3.3 demo and checks that released plus bucketed event counts cover
 all source events. Tests never modify the demo dataset.
 

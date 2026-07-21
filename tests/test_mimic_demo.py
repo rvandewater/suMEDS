@@ -8,7 +8,7 @@ import pytest
 from sumeds import SummaryConfig, summarize
 
 
-DEMO = Path(__file__).parents[1] / "MIMICIV_DEMO" / "MEDS_cohort"
+DEMO = Path(__file__).parent / "resources" / "MIMICIV_DEMO" / "MEDS_cohort"
 
 
 @pytest.mark.skipif(not DEMO.exists(), reason="MIMIC-IV demo is not available")

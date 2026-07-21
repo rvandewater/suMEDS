@@ -12,7 +12,7 @@ collected into Python memory.
 
 ```bash
 uv sync
-uv run suMEDS MIMICIV_DEMO/MEDS_cohort \
+uv run suMEDS tests/resources/MIMICIV_DEMO/MEDS_cohort \
   --output code-summary.parquet \
   --min-subjects 20
 ```
@@ -77,4 +77,4 @@ uv run pytest
 uv run mkdocs build --strict
 ```
 
-The included integration test uses `MIMICIV_DEMO/MEDS_cohort` when present.
+The included integration test uses `tests/resources/MIMICIV_DEMO/MEDS_cohort` when present.
