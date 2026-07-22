@@ -22,6 +22,24 @@ Build the distribution with:
 uv build
 ```
 
+## Release
+
+Bump and commit the project version before creating the matching tag:
+
+```bash
+uv version --bump patch
+uv run pytest
+uv build --clear
+git add pyproject.toml uv.lock
+git commit -m "Release $(uv version --short)"
+VERSION=$(uv version --short)
+git tag -a "$VERSION" -m "Release $VERSION"
+git push origin main "$VERSION"
+```
+
+The tag workflow rejects mismatched versions, then publishes the distributions
+to PyPI and creates the GitHub release.
+
 ## Test data
 
 Unit tests create a tiny MEDS dataset with two shards, code modifiers, subject
