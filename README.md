@@ -1,4 +1,16 @@
 # suMEDS
+
+[![PyPI - Version](https://img.shields.io/pypi/v/suMEDS)](https://pypi.org/project/suMEDS/)
+[![codecov](https://codecov.io/gh/rvandewater/suMEDS/graph/badge.svg?token=RW6JXHNT0W)](https://codecov.io/gh/rvandewater/suMEDS)
+[![tests](https://github.com/rvandewater/suMEDS/actions/workflows/tests.yaml/badge.svg)](https://github.com/rvandewater/suMEDS/actions/workflows/tests.yml)
+[![code-quality](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality-main.yaml)
+[![Python Version](https://img.shields.io/pypi/pyversions/suMEDS.svg)](https://pypi.python.org/pypi/suMEDS/)
+[![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/rvandewater/suMEDS#license)
+[![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/rvandewater/suMEDS/pulls)
+[![contributors](https://img.shields.io/github/contributors/rvandewater/suMEDS.svg)](https://github.com/rvandewater/suMEDS/graphs/contributors)
+[![DOI](https://zenodo.org/badge/940565218.svg)](https://doi.org/10.5281/zenodo.19398854)
+[![MEDS v0.4](https://img.shields.io/badge/MEDS-0.4-blue)](https://medical-event-data-standard.github.io/)
+
 `suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for performing tasks
 [Medical Event Data Standard (MEDS)](https://github.com/Medical-Event-Data-Standard/meds)
 datasets. MEDS data should be "summed" in this way in a storage-efficient format, without the need to access the full dataset.
