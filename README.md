@@ -1,10 +1,12 @@
 # suMEDS
-`suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for defining tasks on
+`suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for performing tasks
 [Medical Event Data Standard (MEDS)](https://github.com/Medical-Event-Data-Standard/meds)
-datasets. It joins canonical descriptions and parent codes to event and unique-subject
-counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
+datasets. MEDS data should be "summed" in this way in a storage-efficient format, without the need to access the full dataset.
+
 
 It can be seen as a form of "extended metadata," as we sometimes need more information than vanilla MEDS metadata provides, but don't want to expose our complete dataset (either because of privacy concerns, storage capacity, or token use efficiency for LLMs).
+It (currently) simply joins canonical descriptions and parent codes to the event and the unique-subject
+counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
 
 > [!WARNING]
 > This package is in early development and is human-guided, but AI-agent-generated. It is not yet reviewed for production use. Please report issues and suggestions.
@@ -14,7 +16,13 @@ It can be seen as a form of "extended metadata," as we sometimes need more infor
 Polars scans, aggregations, joins, and writes stay lazy. This should mean that it could run with little resources on large MEDS datasets.
 
 ## Install and run
+Normal install:
 
+```bash
+pip install sumeds
+```
+
+### Development
 ```bash
 uv sync
 uv run suMEDS tests/resources/MIMICIV_DEMO/MEDS_cohort \
