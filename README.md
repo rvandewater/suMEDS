@@ -1,11 +1,15 @@
 # suMEDS
-> [!WARNING]
-> This package is in early development and is human-guided, but AI-agent-generated. It is not yet reviewed for production use. Please report issues and suggestions.
->
 `suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for defining tasks on
 [Medical Event Data Standard (MEDS)](https://github.com/Medical-Event-Data-Standard/meds)
 datasets. It joins canonical descriptions and parent codes to event and unique-subject
 counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
+
+It can be seen as a form of "extended metadata," as we sometimes need more information than vanilla MEDS metadata provides, but don't want to expose our complete dataset (either because of privacy concerns, storage capacity, or token use efficiency for LLMs).
+
+> [!WARNING]
+> This package is in early development and is human-guided, but AI-agent-generated. It is not yet reviewed for production use. Please report issues and suggestions.
+>
+
 
 Polars scans, aggregations, joins, and writes stay lazy. This should mean that it could run with little resources on large MEDS datasets.
 
