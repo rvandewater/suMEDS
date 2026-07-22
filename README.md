@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/suMEDS)](https://pypi.org/project/suMEDS/)
 [![codecov](https://codecov.io/gh/rvandewater/suMEDS/graph/badge.svg?token=RW6JXHNT0W)](https://codecov.io/gh/rvandewater/suMEDS)
 [![tests](https://github.com/rvandewater/suMEDS/actions/workflows/tests.yaml/badge.svg)](https://github.com/rvandewater/suMEDS/actions/workflows/tests.yml)
-[![code-quality](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality-main.yaml)
+[![code-quality](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality.yaml/badge.svg)](https://github.com/rvandewater/suMEDS/actions/workflows/code-quality-main.yaml)
 [![Python Version](https://img.shields.io/pypi/pyversions/suMEDS.svg)](https://pypi.python.org/pypi/suMEDS/)
 [![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/rvandewater/suMEDS#license)
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/rvandewater/suMEDS/pulls)
