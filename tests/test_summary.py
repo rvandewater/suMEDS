@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import meds
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from sumeds import SummaryConfig, summarize
+from sumeds.scan import _meds_compatible_schema
 
 
 def test_bucket_masks_metadata_and_counts_subject_union(
@@ -105,6 +107,57 @@ def test_optional_text_outputs(
         assert result["parent_codes"][0] == "ROOT"
     else:
         assert result["parent_codes"].to_list()[0] == ["ROOT"]
+
+
+def test_large_arrow_offsets_are_meds_compatible(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    def rewrite(path: Path, types: dict[str, pa.DataType]) -> None:
+        table = pq.read_table(path)
+        schema = pa.schema(
+            [
+                field.with_type(types.get(field.name, field.type))
+                for field in table.schema
+            ],
+            metadata=table.schema.metadata,
+        )
+        pq.write_table(table.cast(schema), path)
+
+    for path in (meds_dataset / "data").glob("*.parquet"):
+        rewrite(path, {"code": pa.large_string()})
+    rewrite(
+        meds_dataset / "metadata" / "codes.parquet",
+        {
+            "code": pa.large_string(),
+            "description": pa.large_string(),
+            "parent_codes": pa.large_list(pa.field("element", pa.large_string())),
+        },
+    )
+    large_metadata_schema = pq.read_schema(meds_dataset / "metadata" / "codes.parquet")
+    assert large_metadata_schema.field("code").type == pa.large_string()
+    assert pa.types.is_large_list(large_metadata_schema.field("parent_codes").type)
+    rewrite(
+        meds_dataset / "metadata" / "subject_splits.parquet",
+        {"split": pa.large_string()},
+    )
+
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(split_columns=True, min_subjects=2),
+    )
+    rows = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
+
+    assert set(rows) == {"A", "B", "C"}
+    assert rows["A"]["description"] == "Common code"
+    assert rows["A"]["parent_codes"] == ["ROOT"]
+    assert rows["A"]["event_count_train"] == 2
+
+    bad = pa.schema([pa.field("code", pa.int64(), nullable=False)])
+    with pytest.raises(Exception, match="incorrect types"):
+        meds.CodeMetadataSchema.validate(
+            _meds_compatible_schema(bad, meds.CodeMetadataSchema.schema())
+        )
 
 
 def test_output_cannot_overwrite_source_dataset(meds_dataset: Path) -> None:

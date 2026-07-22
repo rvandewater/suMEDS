@@ -12,6 +12,36 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
+def _meds_compatible_schema(actual: pa.Schema, expected: pa.Schema) -> pa.Schema:
+    """Normalize equivalent Arrow offset widths for strict MEDS validation."""
+
+    def compatible_type(actual: pa.DataType, expected: pa.DataType) -> pa.DataType:
+        strings = (pa.types.is_string, pa.types.is_large_string)
+        lists = (pa.types.is_list, pa.types.is_large_list)
+        if any(check(actual) for check in strings) and any(
+            check(expected) for check in strings
+        ):
+            return expected
+        if any(check(actual) for check in lists) and any(
+            check(expected) for check in lists
+        ):
+            item = compatible_type(actual.value_type, expected.value_type)
+            if item == expected.value_type:
+                return expected
+        return actual
+
+    expected_types = {field.name: field.type for field in expected}
+    return pa.schema(
+        [
+            field.with_type(compatible_type(field.type, expected_types[field.name]))
+            if field.name in expected_types
+            else field
+            for field in actual
+        ],
+        metadata=actual.metadata,
+    )
+
+
 def dataset_root(path: str | Path) -> Path:
     """Return a validated MEDS root containing ``data`` and ``metadata``."""
 
@@ -64,7 +94,9 @@ def scan_events(root: str | Path, modifiers: Sequence[str] = ()) -> pl.LazyFrame
     files = event_files(root)
     for path in files:
         schema = pq.read_schema(path)
-        meds.DataSchema.validate(schema)
+        meds.DataSchema.validate(
+            _meds_compatible_schema(schema, meds.DataSchema.schema())
+        )
         for column in modifiers:
             if column not in schema.names:
                 raise ValueError(
@@ -89,7 +121,10 @@ def scan_code_metadata(root: str | Path) -> pl.LazyFrame:
     path = dataset_root(root) / meds.code_metadata_filepath
     if not path.is_file():
         raise FileNotFoundError(f"MEDS code metadata not found: {path}")
-    meds.CodeMetadataSchema.validate(pq.read_schema(path))
+    schema = pq.read_schema(path)
+    meds.CodeMetadataSchema.validate(
+        _meds_compatible_schema(schema, meds.CodeMetadataSchema.schema())
+    )
     frame = pl.scan_parquet(path)
     names = set(frame.collect_schema().names())
     missing = []
@@ -106,5 +141,8 @@ def scan_subject_splits(root: str | Path) -> pl.LazyFrame:
     path = dataset_root(root) / meds.subject_splits_filepath
     if not path.is_file():
         raise FileNotFoundError(f"MEDS subject splits not found: {path}")
-    meds.SubjectSplitSchema.validate(pq.read_schema(path))
+    schema = pq.read_schema(path)
+    meds.SubjectSplitSchema.validate(
+        _meds_compatible_schema(schema, meds.SubjectSplitSchema.schema())
+    )
     return pl.scan_parquet(path).select("subject_id", "split")
