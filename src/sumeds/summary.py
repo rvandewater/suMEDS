@@ -112,7 +112,6 @@ def summarize(
     base_keys = ["code", *modifiers]
     count_keys = [*scope, *base_keys]
     split_count_names = _split_count_names(split_columns)
-    _validate_metadata(metadata, modifiers, config, split_count_names)
     token = uuid4().hex
     counts_path = output.with_name(f".{output.name}.{token}.counts.parquet")
     staged_path = output.with_name(f".{output.name}.{token}.tmp{output.suffix}")
@@ -135,6 +134,13 @@ def summarize(
         safe = counts.filter(pl.col("subject_count") >= config.min_subjects)
         if split_columns:
             safe = _mask_split_counts(safe, split_columns, config.min_split_subjects)
+        metadata = metadata.join(
+            safe.select(base_keys),
+            on=base_keys,
+            how="semi",
+            nulls_equal=True,
+        )
+        _validate_metadata(metadata, modifiers, config, split_count_names)
         common = safe.join(
             metadata, on=base_keys, how="left", nulls_equal=True
         ).with_columns(pl.lit(False).alias("is_masked"))

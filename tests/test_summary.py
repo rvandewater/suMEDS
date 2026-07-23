@@ -160,6 +160,32 @@ def test_large_arrow_offsets_are_meds_compatible(
         )
 
 
+def test_unused_duplicate_metadata_is_ignored(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    codes_path = meds_dataset / "metadata" / "codes.parquet"
+    codes = pq.read_table(codes_path)
+    unused = pa.Table.from_pylist(
+        [
+            {
+                "code": "UNUSED",
+                "modifier": "x",
+                "description": description,
+                "parent_codes": ["ROOT"],
+            }
+            for description in ("First", "Second")
+        ],
+        schema=codes.schema,
+    )
+    pq.write_table(pa.concat_tables([codes, unused]), codes_path)
+
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+    )
+
+    assert "UNUSED" not in pl.read_parquet(output)["code"].to_list()
+
+
 def test_output_cannot_overwrite_source_dataset(meds_dataset: Path) -> None:
     with pytest.raises(ValueError, match="must not overwrite"):
         summarize(meds_dataset, meds_dataset / "metadata" / "codes.parquet")
