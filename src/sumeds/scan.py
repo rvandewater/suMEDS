@@ -42,6 +42,13 @@ def _meds_compatible_schema(actual: pa.Schema, expected: pa.Schema) -> pa.Schema
     )
 
 
+def _validate_meds_schema(path: Path, schema: pa.Schema, expected: Any) -> None:
+    try:
+        expected.validate(_meds_compatible_schema(schema, expected.schema()))
+    except Exception as error:
+        raise type(error)(f"Invalid MEDS schema in {path}: {error}") from error
+
+
 def dataset_root(path: str | Path) -> Path:
     """Return a validated MEDS root containing ``data`` and ``metadata``."""
 
@@ -94,9 +101,7 @@ def scan_events(root: str | Path, modifiers: Sequence[str] = ()) -> pl.LazyFrame
     files = event_files(root)
     for path in files:
         schema = pq.read_schema(path)
-        meds.DataSchema.validate(
-            _meds_compatible_schema(schema, meds.DataSchema.schema())
-        )
+        _validate_meds_schema(path, schema, meds.DataSchema)
         for column in modifiers:
             if column not in schema.names:
                 raise ValueError(
@@ -122,9 +127,7 @@ def scan_code_metadata(root: str | Path) -> pl.LazyFrame:
     if not path.is_file():
         raise FileNotFoundError(f"MEDS code metadata not found: {path}")
     schema = pq.read_schema(path)
-    meds.CodeMetadataSchema.validate(
-        _meds_compatible_schema(schema, meds.CodeMetadataSchema.schema())
-    )
+    _validate_meds_schema(path, schema, meds.CodeMetadataSchema)
     frame = pl.scan_parquet(path)
     names = set(frame.collect_schema().names())
     missing = []
@@ -142,7 +145,9 @@ def scan_subject_splits(root: str | Path) -> pl.LazyFrame:
     if not path.is_file():
         raise FileNotFoundError(f"MEDS subject splits not found: {path}")
     schema = pq.read_schema(path)
-    meds.SubjectSplitSchema.validate(
-        _meds_compatible_schema(schema, meds.SubjectSplitSchema.schema())
+    required = meds.SubjectSplitSchema.schema().names
+    schema = pa.schema(
+        [field for field in schema if field.name in required], metadata=schema.metadata
     )
+    _validate_meds_schema(path, schema, meds.SubjectSplitSchema)
     return pl.scan_parquet(path).select("subject_id", "split")
