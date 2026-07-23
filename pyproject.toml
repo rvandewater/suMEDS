@@ -1,6 +1,6 @@
 [project]
 name = "sumeds"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lazy, privacy-aware code occurrence summaries for MEDS datasets"
 readme = "README.md"
 license = "MIT"
