@@ -41,6 +41,7 @@ output = summarize(
 SummaryConfig(
     per_split: bool = False,
     split_columns: bool = False,
+    partitions: int = 256,
     min_subjects: int = 20,
     min_split_subjects: int = 1,
     rare_code_action: str = "bucket",

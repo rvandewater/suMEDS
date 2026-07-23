@@ -20,6 +20,7 @@ class SummaryConfig:
 
     per_split: bool = False
     split_columns: bool = False
+    partitions: int = 256
     min_subjects: int = 20
     min_split_subjects: int = 1
     rare_code_action: str = "bucket"
@@ -33,7 +34,7 @@ class SummaryConfig:
             raise ValueError("per_split and split_columns must be true or false")
         if self.per_split and self.split_columns:
             raise ValueError("per_split and split_columns are mutually exclusive")
-        for name in ("min_subjects", "min_split_subjects"):
+        for name in ("partitions", "min_subjects", "min_split_subjects"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -63,7 +64,7 @@ class SummaryConfig:
         summary = _mapping(raw.get("summary"), "summary")
         privacy = _mapping(raw.get("privacy"), "privacy")
         allowed = {field.name for field in fields(cls)}
-        summary_options = {"per_split", "split_columns"}
+        summary_options = {"per_split", "split_columns", "partitions"}
         unknown = (set(summary) - summary_options) | (
             set(privacy) - (allowed - summary_options)
         )

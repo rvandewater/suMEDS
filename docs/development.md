@@ -54,8 +54,9 @@ all source events. Tests never modify the demo dataset.
 
 - Patient-level data stays in Polars lazy plans.
 - Shard validation reads Parquet footers only.
-- Aggregate counts are staged as Parquet to bound memory and avoid repeating
-  the first event scan.
+- Projected events are hash-partitioned by subject so exact distinct-subject
+  counts are additive while aggregation state remains bounded.
+- Aggregate counts are staged as Parquet before metadata is filtered and joined.
 - Bucket mode uses exactly one additional projected event pass.
 - Parquet, CSV, NDJSON, and bounded-memory JSON outputs are staged beside the
   destination and atomically replaced.

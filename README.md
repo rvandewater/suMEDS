@@ -34,6 +34,12 @@ Normal install:
 pip install sumeds
 ```
 
+Datasets with more than 2³² rows require Polars' 64-bit runtime:
+
+```bash
+pip install "sumeds[rt64]"
+```
+
 ### Development
 ```bash
 uv sync
@@ -49,6 +55,7 @@ Or use YAML:
 summary:
   per_split: false
   split_columns: true
+  partitions: 256
 privacy:
   min_subjects: 20
   min_split_subjects: 1

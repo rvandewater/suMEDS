@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from sumeds import SummaryConfig, summarize
-from sumeds.scan import _meds_compatible_schema
+from sumeds.scan import _meds_compatible_schema, scan_subject_splits
 
 
 def test_bucket_masks_metadata_and_counts_subject_union(
@@ -109,6 +109,28 @@ def test_optional_text_outputs(
         assert result["parent_codes"].to_list()[0] == ["ROOT"]
 
 
+def test_subject_splits_allows_unused_extra_columns(meds_dataset: Path) -> None:
+    path = meds_dataset / "metadata" / "subject_splits.parquet"
+    table = pq.read_table(path).append_column("has_visit", [[True, True, False]])
+    pq.write_table(table, path)
+
+    result = scan_subject_splits(meds_dataset).collect()
+
+    assert result.columns == ["subject_id", "split"]
+
+
+def test_subject_splits_schema_error_names_file(meds_dataset: Path) -> None:
+    path = meds_dataset / "metadata" / "subject_splits.parquet"
+    table = pq.read_table(path)
+    table = table.set_column(1, "split", pa.array([1, 1, 2]))
+    pq.write_table(table, path)
+
+    with pytest.raises(
+        Exception, match=r"Invalid MEDS schema in .*subject_splits.parquet"
+    ):
+        scan_subject_splits(meds_dataset)
+
+
 def test_large_arrow_offsets_are_meds_compatible(
     meds_dataset: Path, tmp_path: Path
 ) -> None:
@@ -203,3 +225,4 @@ def test_failure_preserves_existing_output(meds_dataset: Path, tmp_path: Path) -
     assert output.read_bytes() == b"existing"
     assert not list(tmp_path.glob(".*.tmp.parquet"))
     assert not list(tmp_path.glob(".*.counts.parquet"))
+    assert not list(tmp_path.glob(".*.work"))
