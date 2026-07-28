@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import polars as pl
+from tqdm.auto import tqdm
 
 from .config import EnrichmentConfig
 from .io import output_format, scan_table, sink_table
@@ -86,8 +87,10 @@ def enrich_file(
     input_path: str | Path,
     output_path: str | Path,
     config: EnrichmentConfig,
+    *,
+    verbose: bool = False,
 ) -> Path:
-    """Atomically enrich a standalone metadata or summary table."""
+    """Atomically enrich a standalone table, optionally reporting coverage."""
 
     input_path = Path(input_path).expanduser().resolve()
     output_path = Path(output_path).expanduser().resolve()
@@ -98,12 +101,107 @@ def enrich_file(
     staged = output_path.with_name(
         f".{output_path.name}.{uuid4().hex}.tmp{output_path.suffix}"
     )
-    try:
-        sink_table(enrich_metadata(scan_table(input_path), config), staged, format_)
-        staged.replace(output_path)
-    finally:
-        staged.unlink(missing_ok=True)
+    with tqdm(
+        total=4,
+        desc="Preparing enrichment",
+        unit="stage",
+        dynamic_ncols=True,
+        disable=not verbose,
+    ) as progress:
+        try:
+            source = scan_table(input_path)
+            progress.set_description("Reading input")
+            progress.update()
+            progress.set_description("Querying Athena")
+            enriched = enrich_metadata(source, config)
+            progress.update()
+            progress.set_description("Writing output")
+            sink_table(enriched, staged, format_)
+            staged.replace(output_path)
+            progress.update()
+            if verbose:
+                progress.set_description("Calculating coverage")
+                report = _enrichment_report(source, scan_table(output_path))
+            progress.update()
+        finally:
+            staged.unlink(missing_ok=True)
+    if verbose:
+        _print_enrichment_report(report)
     return output_path
+
+
+def _enrichment_report(
+    before: pl.LazyFrame, after: pl.LazyFrame
+) -> tuple[dict[str, int], dict[str, int]]:
+    return _coverage(before), _coverage(after)
+
+
+def _coverage(frame: pl.LazyFrame) -> dict[str, int]:
+    schema = frame.collect_schema()
+    expressions = [
+        pl.len().alias("rows"),
+        pl.col("code").n_unique().alias("unique_codes"),
+    ]
+    for name in _FIELDS:
+        expressions.append(
+            (pl.col(name).is_not_null().sum() if name in schema else pl.lit(0)).alias(
+                name
+            )
+        )
+    if "concept_id" in schema:
+        expressions.append(
+            pl.col("code")
+            .filter(pl.col("concept_id").is_not_null())
+            .n_unique()
+            .alias("matched_codes")
+        )
+    else:
+        expressions.append(pl.lit(0).alias("matched_codes"))
+    return {
+        name: int(value or 0)
+        for name, value in frame.select(expressions)
+        .collect(engine="streaming")
+        .row(0, named=True)
+        .items()
+    }
+
+
+def _print_enrichment_report(
+    report: tuple[dict[str, int], dict[str, int]],
+) -> None:
+    before, after = report
+    rows = after["rows"]
+    matched_rows = after["concept_id"]
+    print("\nEnrichment report")
+    print(f"  Rows processed:             {rows:,}")
+    print(f"  Unique codes:               {after['unique_codes']:,}")
+    print(
+        "  Athena matches added:      "
+        f"{max(0, matched_rows - before['concept_id']):,} rows, "
+        f"{max(0, after['matched_codes'] - before['matched_codes']):,} unique codes"
+    )
+    print(f"  Rows with concept ID:       {_coverage_value(matched_rows, rows)}")
+    print(f"  Rows without Athena match:  {_coverage_value(rows - matched_rows, rows)}")
+    print("  Metadata coverage (present before -> after):")
+    labels = {
+        "description": "Descriptions",
+        "parent_codes": "Parent-code lists",
+        "vocabulary_id": "Vocabulary IDs",
+        "concept_id": "OMOP concept IDs",
+        "concept_code": "Concept codes",
+        "domain_id": "Domains",
+        "standard_concept": "Standard-concept flags",
+    }
+    for name, label in labels.items():
+        added = max(0, after[name] - before[name])
+        print(
+            f"    {label:<23} {before[name]:>10,} -> "
+            f"{_coverage_value(after[name], rows):>18} (+{added:,} filled)"
+        )
+
+
+def _coverage_value(count: int, total: int) -> str:
+    return f"{count:,} ({count / total:.1%})" if total else "0 (0.0%)"
 
 
 def _code_candidates(frame: pl.LazyFrame) -> pl.LazyFrame:

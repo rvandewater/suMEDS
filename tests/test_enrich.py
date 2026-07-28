@@ -194,7 +194,13 @@ def test_standalone_cli(athena_csv: Path, tmp_path: Path, capsys) -> None:
         )
         == 0
     )
-    assert f"Wrote {output_path}" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert f"Wrote {output_path}" in captured.out
+    assert "Enrichment report" in captured.out
+    assert "Athena matches added:      1 rows, 1 unique codes" in captured.out
+    assert "Descriptions" in captured.out
+    assert "Parent-code lists" in captured.out
+    assert "4/4" in captured.err
     assert pl.read_parquet(output_path)["concept_id"].to_list() == [200]
 
 

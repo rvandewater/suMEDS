@@ -84,6 +84,9 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
   --athena-csv /path/to/athena
 ```
 
+The standalone command shows phase progress and reports Athena matches and
+before/after metadata coverage.
+
 Both `VOCABULARY//CODE//...` and
 `VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved. See the
 [Athena enrichment guide](docs/enrichment.md).

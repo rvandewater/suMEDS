@@ -81,13 +81,37 @@ uv run suMEDS-enrich /data/MEDS/metadata/codes.parquet \
 ```
 
 Parquet, CSV, JSON, JSONL, and NDJSON are supported. Input and output must be
-different paths, and the destination is replaced atomically.
+different paths, and the destination is replaced atomically. The CLI displays
+a `tqdm` phase-progress bar followed by row and unique-code match counts plus
+before/after coverage for descriptions, parent codes, concept IDs, vocabulary,
+domain, and standard-concept fields.
 
 ## Interactive demo
 
 Open `examples/athena_enrichment_demo.ipynb` for a hands-on walkthrough using
 individual codes and the included MIMIC-IV demo metadata. The notebook supports
 either source and keeps the full summary step opt-in.
+## Example output
+
+```bash
+$ uv run suMEDS-enrich summary.parquet --athena-postgres postgresql://postgres@127.0.0.1:5432/omop -o summary_enriched.parquet
+Calculating coverage: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [02:38<00:00, 39.59s/stage]
+
+Enrichment report
+  Rows processed:             118,088
+  Unique codes:               118,088
+  Athena matches added:      65,358 rows, 65,358 unique codes
+  Rows with concept ID:       65,367 (55.4%)
+  Rows without Athena match:  52,721 (44.6%)
+  Metadata coverage (present before -> after):
+    Descriptions                     9 ->     65,367 (55.4%) (+65,358 filled)
+    Parent-code lists                9 ->     61,021 (51.7%) (+61,012 filled)
+    Vocabulary IDs                   9 ->     65,367 (55.4%) (+65,358 filled)
+    OMOP concept IDs                 9 ->     65,367 (55.4%) (+65,358 filled)
+    Concept codes                    0 ->     65,366 (55.4%) (+65,366 filled)
+    Domains                          0 ->     65,366 (55.4%) (+65,366 filled)
+    Standard-concept flags           0 ->     61,169 (51.8%) (+61,169 filled)
+```
 
 ## Privacy ordering
 

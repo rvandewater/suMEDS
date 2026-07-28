@@ -118,7 +118,12 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
     parser = build_enrich_parser()
     args = parser.parse_args(argv)
     try:
-        output = enrich_file(args.input, args.output, _enrichment_from_args(args))
+        output = enrich_file(
+            args.input,
+            args.output,
+            _enrichment_from_args(args),
+            verbose=True,
+        )
     except Exception as exc:
         parser.exit(1, f"suMEDS-enrich: error: {exc}\n")
     print(f"Wrote {output}")

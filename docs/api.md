@@ -75,11 +75,15 @@ enrich_file(
     input_path: str | Path,
     output_path: str | Path,
     config: EnrichmentConfig,
+    *,
+    verbose: bool = False,
 ) -> Path
 ```
 
 Atomically enriches a supported standalone table. Input and output paths must
-differ. See [Athena enrichment](enrichment.md) for source and parsing details.
+differ. `verbose=True` shows phase progress and prints before/after field
+coverage; the `suMEDS-enrich` CLI enables it by default. See
+[Athena enrichment](enrichment.md) for source and parsing details.
 
 ## Lazy building blocks
 
