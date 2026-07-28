@@ -62,12 +62,15 @@ def _partition_by_subject(
     frame: pl.LazyFrame, path: Path, partitions: int
 ) -> dict[str, Path]:
     # ponytail: fixed-count disk partitions trade I/O for bounded group state.
+    key = (pl.col("subject_id").hash(seed=0) % partitions).alias("_partition")
+    # PartitionBy replaced PartitionByKey in Polars 1.37.
+    partition = (
+        pl.PartitionBy(path, key=key, include_key=False)
+        if hasattr(pl, "PartitionBy")
+        else pl.PartitionByKey(path, by=key, include_key=False)
+    )
     frame.sink_parquet(
-        pl.PartitionBy(
-            path,
-            key=(pl.col("subject_id").hash(seed=0) % partitions).alias("_partition"),
-            include_key=False,
-        ),
+        partition,
         compression="lz4",
         row_group_size=10_000,
         maintain_order=False,
