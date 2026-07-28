@@ -81,8 +81,10 @@ enrich_file(
 ```
 
 Atomically enriches a supported standalone table. Input and output paths must
-differ. `verbose=True` shows phase progress and prints before/after field
-coverage; the `suMEDS-enrich` CLI enables it by default. See
+differ. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
+are necessarily eager because Polars provides no `scan_json` equivalent.
+`verbose=True` shows phase progress and prints before/after field coverage; the
+`suMEDS-enrich` CLI enables it by default. See
 [Athena enrichment](enrichment.md) for source and parsing details.
 
 ## Lazy building blocks

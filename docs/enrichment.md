@@ -80,8 +80,11 @@ uv run suMEDS-enrich /data/MEDS/metadata/codes.parquet \
   -o codes-enriched.parquet --athena-csv /vocabularies/athena
 ```
 
-Parquet, CSV, JSON, JSONL, and NDJSON are supported. Input and output must be
-different paths, and the destination is replaced atomically. The CLI displays
+Parquet, CSV, JSON, JSONL, and NDJSON are supported. Parquet, CSV, JSONL, and
+NDJSON inputs are scanned lazily. Standard JSON arrays are read eagerly because
+Polars has no lazy array-JSON reader; prefer Parquet or newline-delimited JSON
+for large inputs. Input and output must be different paths, and the destination
+is replaced atomically. The CLI displays
 a `tqdm` phase-progress bar followed by row and unique-code match counts plus
 before/after coverage for descriptions, parent codes, concept IDs, vocabulary,
 domain, and standard-concept fields.

@@ -28,7 +28,13 @@ def output_format(path: str | Path) -> str:
 
 
 def scan_table(path: str | Path) -> pl.LazyFrame:
-    """Scan a supported standalone metadata or summary table."""
+    """Read a supported standalone metadata or summary table.
+
+    Parquet, CSV, JSONL, and NDJSON inputs are scanned lazily. Polars has no
+    lazy reader for standard JSON arrays, so ``.json`` is loaded eagerly before
+    being converted to a :class:`LazyFrame`. Prefer Parquet or newline-delimited
+    JSON for large inputs.
+    """
 
     path = Path(path).expanduser().resolve()
     format_ = output_format(path)
@@ -40,6 +46,7 @@ def scan_table(path: str | Path) -> pl.LazyFrame:
         return pl.scan_csv(path)
     if format_ == "ndjson":
         return pl.scan_ndjson(path)
+    # Polars intentionally exposes scan_ndjson, but no scan for JSON arrays.
     return pl.read_json(path).lazy()
 
 
