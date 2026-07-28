@@ -23,7 +23,7 @@ def output_format(path: str | Path) -> str:
         return OUTPUT_FORMATS[path.suffix.lower()]
     except KeyError:
         raise ValueError(
-            f"unsupported output suffix {path.suffix!r}; use Parquet, CSV, or JSON"
+            f"unsupported output suffix {path.suffix!r}; use Parquet (.parquet), CSV (.csv), JSON (.json), or NDJSON (.jsonl/.ndjson)"
         ) from None
 
 
