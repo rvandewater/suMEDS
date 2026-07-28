@@ -7,3 +7,4 @@ site/
 dist/
 .pi-subagents/
 code-summary.parquet
+old_plan_diagnosis/
