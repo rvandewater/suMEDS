@@ -11,8 +11,10 @@ For each output scope, codes below `min_subjects` unique subjects are either:
 - combined into one row (`bucket`).
 
 A masked row contains no code description, parent relationships, modifier
-values, or metadata extensions. The output never contains subject identifiers,
-event timestamps, raw text values, numeric values, or extrema.
+values, or metadata extensions. Optional Athena lookup runs after masking, so
+source codes represented by a rare bucket are never sent to PostgreSQL or
+restored from local vocabulary files. The output never contains subject
+identifiers, event timestamps, raw text values, numeric values, or extrema.
 
 With row-per-split summaries, `min_subjects` is applied independently within
 each split. In wide `split_columns` output, total rows use `min_subjects` while
@@ -43,7 +45,8 @@ This is threshold suppression, not differential privacy. It does not prevent:
 - disclosure caused by choosing a threshold that is too low;
 - all risks from exact aggregate counts;
 - rare split-cell disclosure when `split_columns` keeps the default
-  `min_split_subjects: 1`.
+  `min_split_subjects: 1`;
+- standalone enrichment of a table that has not already passed release review.
 
 Use one reviewed configuration for a release, restrict access to intermediate
 and source data, and assess policy requirements with the relevant privacy or

@@ -7,6 +7,7 @@ nav:
   - Overview: index.md
   - Usage: usage.md
   - Configuration: configuration.md
+  - Athena enrichment: enrichment.md
   - Python API: api.md
   - Privacy: privacy.md
   - Development: development.md

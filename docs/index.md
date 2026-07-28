@@ -7,7 +7,9 @@ discover and define downstream tasks:
 - event occurrence counts;
 - unique-subject occurrence counts;
 - optional counts per canonical subject split, as rows or columns beside totals;
-- configurable masking or removal of rare code cells.
+- configurable masking or removal of rare code cells;
+- optional descriptions, parents, domains, and concept identifiers from OHDSI
+  Athena CSV files or PostgreSQL.
 
 ## Data flow
 
@@ -15,7 +17,8 @@ discover and define downstream tasks:
 metadata/dataset.json ── code modifier declaration ─┐
 data/**/*.parquet ── projected lazy scan ── counts ├─ privacy policy ── Parquet
 metadata/codes.parquet ── descriptions/parents ─────┤
-metadata/subject_splits.parquet ── optional split ──┘ Parquet / CSV / JSON
+metadata/subject_splits.parquet ── optional split ──┤ Parquet / CSV / JSON
+Athena CSV/PostgreSQL ── optional released-code enrichment ──┘
 ```
 
 Only `subject_id`, `code`, declared code modifiers, and optionally `split` are

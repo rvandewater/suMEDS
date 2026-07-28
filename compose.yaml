@@ -1,0 +1,51 @@
+name: lettuce-local
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: omop
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    ports:
+      - "127.0.0.1:5432:5432"
+
+    volumes:
+      - lettuce_pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d omop"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  load-athena:
+    image: ghcr.io/health-informatics-uon/omop-lite:0.6.6
+
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: omop
+
+      DIALECT: postgresql
+      SCHEMA_NAME: public
+      OMOP_VERSION: omop5_4
+
+      SYNTHETIC: "false"
+      DATA_DIR: /data
+      FTS_CREATE: "FALSE"
+
+    volumes:
+      - ./athena:/data:ro
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  lettuce_pgdata:

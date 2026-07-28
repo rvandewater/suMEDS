@@ -25,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 suMEDS = "sumeds.cli:main"
+suMEDS-enrich = "sumeds.cli:enrich_main"
 
 [build-system]
 requires = ["uv_build>=0.11.15,<0.12.0"]

@@ -36,6 +36,8 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--rare-code-action bucket\|drop` | Combine or omit rare rows |
 | `--rare-code-label TEXT` | Sentinel used for the bucket |
 | `--round-counts-to N` | Round released counts to a multiple |
+| `--athena-csv DIR` | Enrich released codes from local Athena files |
+| `--athena-postgres CONNINFO` | Enrich released codes through `psql` |
 | `--version` | Print the installed version |
 
 CLI options override YAML values. A successful run replaces the target
@@ -78,6 +80,10 @@ uv run suMEDS /data/MEDS -o summary-wide-private.parquet \
 
 The two split-output modes are mutually exclusive.
 
+Optional Athena enrichment accepts exactly one local or PostgreSQL source. Use
+`suMEDS-enrich INPUT -o OUTPUT` to enrich an existing metadata or summary table
+without running a summary. See [Athena enrichment](enrichment.md).
+
 ## Output formats
 
 The filename suffix selects the writer:
@@ -99,6 +105,11 @@ Parquet when exact nested types matter.
 | `description` | string, nullable | Canonical description; null for masked rows |
 | `parent_codes` | list[string], nullable | Vocabulary parents; null for masked rows |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
+| `vocabulary_id` | string, nullable | Matched Athena vocabulary when enrichment is enabled |
+| `concept_id` | int64, nullable | Numeric OMOP concept identifier |
+| `concept_code` | string, nullable | Vocabulary-local Athena code |
+| `domain_id` | string, nullable | OMOP domain |
+| `standard_concept` | string, nullable | OMOP standard-concept marker |
 | `event_count` | uint64 | Event rows in the release cell |
 | `subject_count` | uint64 | Distinct subjects in the release cell or total |
 | `event_count_<split>` | uint64, nullable | Split event count; null below `min_split_subjects` |

@@ -8,3 +8,8 @@ privacy:
   rare_code_action: bucket
   rare_code_label: __RARE__
   round_counts_to: 5
+
+# Optional local Athena source:
+# enrichment:
+#   csv_dir: /path/to/athena
+# Use `postgres: postgresql://postgres@localhost/omop` instead for PostgreSQL.
