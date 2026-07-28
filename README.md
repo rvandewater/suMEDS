@@ -8,7 +8,7 @@
 [![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/rvandewater/suMEDS#license)
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/rvandewater/suMEDS/pulls)
 [![contributors](https://img.shields.io/github/contributors/rvandewater/suMEDS.svg)](https://github.com/rvandewater/suMEDS/graphs/contributors)
-[![DOI](https://zenodo.org/badge/940565218.svg)](https://doi.org/10.5281/zenodo.19398854)
+[![DOI](https://zenodo.org/badge/1307476724.svg)](https://doi.org/10.5281/zenodo.21647050)
 [![MEDS v0.4](https://img.shields.io/badge/MEDS-0.4-blue)](https://medical-event-data-standard.github.io/)
 
 `suMEDS` (pronounced "summed-s", past tense of "sum" + s) creates a compact code catalog for performing tasks
