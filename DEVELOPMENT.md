@@ -27,7 +27,7 @@ uv build
 Bump and commit the project version before creating the matching tag:
 
 ```bash
-uv version --bump patch
+uv version --bump patch # or minor/major as appropriate
 uv run pytest
 uv build --clear
 git add pyproject.toml uv.lock
