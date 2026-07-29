@@ -1,7 +1,7 @@
 site_name: suMEDS
 site_description: Lazy, privacy-aware code occurrence summaries for MEDS datasets
-repo_url: https://github.com/Medical-Event-Data-Standard/meds
-repo_name: MEDS standard
+repo_url: https://github.com/rvandewater/suMEDS
+repo_name: suMEDS
 strict: true
 nav:
   - Overview: index.md
