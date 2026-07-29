@@ -1,6 +1,7 @@
 summary:
   per_split: false
   split_columns: false
+  partitions: 256
 
 privacy:
   min_subjects: 20
