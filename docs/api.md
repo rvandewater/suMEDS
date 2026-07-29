@@ -54,6 +54,40 @@ SummaryConfig(
 `config.with_overrides(...)` creates an updated immutable copy and ignores
 `None` values, which is useful for CLI layers.
 
+Set `enrichment=EnrichmentConfig(csv_dir=...)` or
+`EnrichmentConfig(postgres=...)` to enrich released summary rows.
+
+### `enrich_metadata`
+
+```python
+enrich_metadata(
+    frame: polars.LazyFrame,
+    config: EnrichmentConfig,
+) -> polars.LazyFrame
+```
+
+Adds or fills Athena fields on an arbitrary lazy metadata or summary table.
+Existing non-null values are preserved.
+
+### `enrich_file`
+
+```python
+enrich_file(
+    input_path: str | Path,
+    output_path: str | Path,
+    config: EnrichmentConfig,
+    *,
+    verbose: bool = False,
+) -> Path
+```
+
+Atomically enriches a supported standalone table. Input and output paths must
+differ. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
+are necessarily eager because Polars provides no `scan_json` equivalent.
+`verbose=True` shows phase progress and prints before/after field coverage; the
+`suMEDS-enrich` CLI enables it by default. See
+[Athena enrichment](enrichment.md) for source and parsing details.
+
 ## Lazy building blocks
 
 ### `scan_events(root, modifiers=()) -> polars.LazyFrame`

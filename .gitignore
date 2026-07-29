@@ -1,5 +1,6 @@
 .DS_Store
 .venv/
+.env
 .pytest_cache/
 __pycache__/
 *.py[cod]
@@ -7,3 +8,5 @@ site/
 dist/
 .pi-subagents/
 code-summary.parquet
+demo-output/
+old_plan_diagnosis/

@@ -11,6 +11,8 @@ from uuid import uuid4
 import polars as pl
 
 from .config import SummaryConfig
+from .enrich import enrich_metadata
+from .io import output_format, sink_table
 from .scan import (
     code_modifier_columns,
     dataset_root,
@@ -22,13 +24,6 @@ from .scan import (
 
 _COUNT_COLUMNS = ("event_count", "subject_count")
 _RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_masked", "split"}
-_OUTPUT_FORMATS = {
-    ".parquet": "parquet",
-    ".csv": "csv",
-    ".json": "json",
-    ".jsonl": "ndjson",
-    ".ndjson": "ndjson",
-}
 
 
 def code_occurrences(
@@ -170,11 +165,7 @@ def summarize(
     config = config or SummaryConfig()
     root = dataset_root(root)
     output = Path(output).expanduser().resolve()
-    output_format = _OUTPUT_FORMATS.get(output.suffix.lower())
-    if output_format is None:
-        raise ValueError(
-            f"unsupported output suffix {output.suffix!r}; use Parquet, CSV, or JSON"
-        )
+    format_ = output_format(output)
     if output.is_relative_to(root / "data") or output.is_relative_to(root / "metadata"):
         raise ValueError("output must not overwrite MEDS data or metadata")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -286,7 +277,9 @@ def summarize(
         result = pl.concat(frames, how="vertical_relaxed").sort(
             [*scope, "code", *modifiers]
         )
-        _sink_output(result, staged_path, output_format)
+        if config.enrichment is not None:
+            result = enrich_metadata(result, config.enrichment)
+        sink_table(result, staged_path, format_)
         staged_path.replace(output)
     finally:
         counts_path.unlink(missing_ok=True)
@@ -356,45 +349,6 @@ def _mask_split_counts(
             .alias(subject_name),
         )
     )
-
-
-def _sink_output(frame: pl.LazyFrame, path: Path, output_format: str) -> None:
-    if output_format == "parquet":
-        frame.sink_parquet(path)
-    elif output_format == "csv":
-        schema = frame.collect_schema()
-        nested = []
-        for name, dtype in schema.items():
-            column = pl.col(name)
-            if isinstance(dtype, pl.Array):
-                column = column.arr.to_list()
-                dtype = pl.List(dtype.inner)
-            if isinstance(dtype, pl.List):
-                nested.append(
-                    column.list.eval(pl.element().cast(pl.String))
-                    .list.join("|")
-                    .alias(name)
-                )
-            elif isinstance(dtype, pl.Struct):
-                nested.append(column.struct.json_encode().alias(name))
-        frame.with_columns(nested).sink_csv(path)
-    elif output_format == "ndjson":
-        frame.sink_ndjson(path)
-    else:
-        lines = path.with_suffix(path.suffix + ".ndjson")
-        try:
-            frame.sink_ndjson(lines)
-            with lines.open("rb") as source, path.open("wb") as target:
-                target.write(b"[")
-                separator = b""
-                for line in source:
-                    line = line.strip()
-                    if line:
-                        target.write(separator + line)
-                        separator = b",\n"
-                target.write(b"]\n")
-        finally:
-            lines.unlink(missing_ok=True)
 
 
 def _validate_metadata(

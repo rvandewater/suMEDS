@@ -7,7 +7,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Sequence
 
-from .config import SummaryConfig
+from .config import EnrichmentConfig, SummaryConfig
+from .enrich import enrich_file
 from .summary import summarize
 
 
@@ -54,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--round-counts-to", type=int, help="round released counts to this multiple"
     )
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
+        "--athena-csv", type=Path, help="enrich from an Athena CSV directory"
+    )
+    sources.add_argument(
+        "--athena-postgres", help="enrich from PostgreSQL using this psql conninfo"
+    )
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -76,6 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rare_code_action=args.rare_code_action,
             rare_code_label=args.rare_code_label,
             round_counts_to=args.round_counts_to,
+            enrichment=_enrichment_from_args(args),
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
@@ -87,6 +96,52 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"Wrote {output}")
     return 0
+
+
+def build_enrich_parser() -> argparse.ArgumentParser:
+    """Build the standalone enrichment CLI parser."""
+
+    parser = argparse.ArgumentParser(
+        prog="suMEDS-enrich",
+        description="Enrich MEDS metadata or a suMEDS summary from OHDSI Athena.",
+    )
+    parser.add_argument("input", type=Path, help="metadata or summary table")
+    parser.add_argument(
+        "-o", "--output", type=Path, required=True, help="enriched output table"
+    )
+    sources = parser.add_mutually_exclusive_group(required=True)
+    sources.add_argument("--athena-csv", type=Path, help="Athena CSV directory")
+    sources.add_argument(
+        "--athena-postgres", help="PostgreSQL connection string or conninfo"
+    )
+    parser.add_argument("--version", action="version", version=version("suMEDS"))
+    return parser
+
+
+def enrich_main(argv: Sequence[str] | None = None) -> int:
+    """Run standalone Athena enrichment."""
+
+    parser = build_enrich_parser()
+    args = parser.parse_args(argv)
+    try:
+        output = enrich_file(
+            args.input,
+            args.output,
+            _enrichment_from_args(args),
+            verbose=True,
+        )
+    except Exception as exc:
+        parser.exit(1, f"suMEDS-enrich: error: {exc}\n")
+    print(f"Wrote {output}")
+    return 0
+
+
+def _enrichment_from_args(args: argparse.Namespace) -> EnrichmentConfig | None:
+    if args.athena_csv is not None:
+        return EnrichmentConfig(csv_dir=args.athena_csv)
+    if args.athena_postgres is not None:
+        return EnrichmentConfig(postgres=args.athena_postgres)
+    return None
 
 
 if __name__ == "__main__":

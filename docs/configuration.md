@@ -15,6 +15,11 @@ privacy:
   rare_code_action: bucket
   rare_code_label: __RARE__
   round_counts_to: null
+
+# Optional; set exactly one source.
+enrichment:
+  csv_dir: /vocabularies/athena
+  # postgres: postgresql://postgres@localhost/omop
 ```
 
 ## Summary options
@@ -95,6 +100,14 @@ Default: `null` (exact counts).
 
 A positive integer rounds released event and subject counts to the nearest
 multiple after thresholding. Use `1` or `null` for exact counts.
+
+## Enrichment options
+
+Set exactly one of `csv_dir` or `postgres` under `enrichment`. Omitting the
+section disables enrichment. Relative CSV directories are resolved relative to
+the YAML file. CLI `--athena-csv` or `--athena-postgres` overrides the complete
+YAML enrichment source. See [Athena enrichment](enrichment.md) for required
+files, parsing, and output fields.
 
 ## Precedence
 

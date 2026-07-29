@@ -73,15 +73,44 @@ uv run suMEDS /path/to/MEDS -o summary.json -c examples/summary.yaml
 CLI flags override YAML. The defaults bucket codes seen in fewer than 20 unique
 subjects and retain exact counts.
 
+Optionally fill missing descriptions, direct parents, OMOP concept IDs, domains,
+and standard-concept markers from OHDSI Athena:
+
+```bash
+uv run suMEDS /path/to/MEDS -o summary.parquet \
+  --athena-csv /path/to/athena
+# Or use PostgreSQL through the installed psql client:
+uv run suMEDS /path/to/MEDS -o summary.parquet \
+  --athena-postgres postgresql://postgres@localhost/omop
+```
+
+Standalone enrichment avoids rescanning event data:
+
+```bash
+uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
+  --athena-csv /path/to/athena
+```
+
+The standalone command shows phase progress and reports Athena matches and
+before/after metadata coverage.
+
+Both `VOCABULARY//CODE//...` and
+`VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved. See the
+[Athena enrichment guide](docs/enrichment.md).
+
 ## Python API
 
 ```python
-from sumeds import SummaryConfig, summarize
+from sumeds import EnrichmentConfig, SummaryConfig, summarize
 
 path = summarize(
     "/path/to/MEDS",
     "code-summary.parquet",
-    SummaryConfig(min_subjects=20, rare_code_action="bucket"),
+    SummaryConfig(
+        min_subjects=20,
+        rare_code_action="bucket",
+        enrichment=EnrichmentConfig(csv_dir="/path/to/athena"),
+    ),
 )
 ```
 
