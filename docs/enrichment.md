@@ -91,6 +91,7 @@ domain, and standard-concept fields.
 Open `examples/athena_enrichment_demo.ipynb` for a hands-on walkthrough using
 individual codes and the included MIMIC-IV demo metadata. The notebook supports
 either source and keeps the full summary step opt-in.
+
 ## Example output
 
 ```bash
