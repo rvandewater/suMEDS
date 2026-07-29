@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from typing import Sequence
 from uuid import uuid4
@@ -52,6 +53,103 @@ def _code_occurrences(
     return events.group_by(list(keys)).agg(expressions)
 
 
+def _partition_by_subject(
+    frame: pl.LazyFrame, path: Path, partitions: int
+) -> dict[str, Path]:
+    # ponytail: fixed-count disk partitions trade I/O for bounded group state.
+    key = (pl.col("subject_id").hash(seed=0) % partitions).alias("_partition")
+    # PartitionBy replaced PartitionByKey in Polars 1.37.
+    partition = (
+        pl.PartitionBy(path, key=key, include_key=False)
+        if hasattr(pl, "PartitionBy")
+        else pl.PartitionByKey(path, by=key, include_key=False)
+    )
+    frame.sink_parquet(
+        partition,
+        compression="lz4",
+        row_group_size=10_000,
+        maintain_order=False,
+        mkdir=True,
+    )
+    return {
+        child.name: child
+        for child in path.iterdir()
+        if child.is_dir() and any(child.glob("*.parquet"))
+    }
+
+
+def _scan_partition(path: Path) -> pl.LazyFrame:
+    return pl.scan_parquet([str(file) for file in sorted(path.glob("*.parquet"))])
+
+
+def _partition_events(
+    event_path: Path,
+    split_parts: dict[str, Path] | None,
+    validate_splits: bool,
+) -> pl.LazyFrame:
+    events = _scan_partition(event_path)
+    if split_parts is None:
+        return events
+    split_path = split_parts.get(event_path.name)
+    if split_path is None:
+        return events.with_columns(pl.lit(None, dtype=pl.String).alias("split"))
+    splits = _scan_partition(split_path)
+    if validate_splits:
+        duplicate = (
+            splits.group_by("subject_id").len().filter(pl.col("len") > 1).limit(1)
+        )
+        _raise_if_any(duplicate, "subject_splits contains duplicate subject IDs")
+    return events.join(splits, on="subject_id", how="left")
+
+
+def _partial_count_names(
+    split_columns: Sequence[tuple[str, str, str]],
+) -> list[str]:
+    names = [*_COUNT_COLUMNS, *_split_count_names(split_columns)]
+    if split_columns:
+        names.append("_missing_split_count")
+    return names
+
+
+def _sum_counts(
+    frame: pl.LazyFrame, keys: Sequence[str], columns: Sequence[str]
+) -> pl.LazyFrame:
+    expressions = [pl.col(name).sum().cast(pl.UInt64).alias(name) for name in columns]
+    return (
+        frame.group_by(list(keys)).agg(expressions)
+        if keys
+        else frame.select(expressions)
+    )
+
+
+def _sink_partitioned_counts(
+    event_parts: dict[str, Path],
+    split_parts: dict[str, Path] | None,
+    keys: Sequence[str],
+    split_columns: Sequence[tuple[str, str, str]],
+    partial_dir: Path,
+    output: Path,
+) -> None:
+    if not event_parts:
+        raise ValueError("MEDS data contains no events")
+    partial_dir.mkdir(parents=True)
+    partial_paths = []
+    for name, event_path in sorted(event_parts.items()):
+        path = partial_dir / f"{name}.parquet"
+        _code_occurrences(
+            _partition_events(event_path, split_parts, validate_splits=True),
+            keys,
+            split_columns,
+        ).sink_parquet(path, compression="lz4", maintain_order=False)
+        partial_paths.append(str(path))
+    # Subjects occur in exactly one hash partition, so exact subject counts add.
+    _sum_counts(
+        pl.scan_parquet(partial_paths),
+        keys,
+        _partial_count_names(split_columns),
+    ).sink_parquet(output, maintain_order=False)
+
+
 def summarize(
     root: str | Path,
     output: str | Path,
@@ -59,9 +157,9 @@ def summarize(
 ) -> Path:
     """Write a privacy-aware MEDS code catalog and return its path.
 
-    Event rows remain in Polars lazy plans and are streamed to bounded-memory
-    outputs. Bucket mode performs a second projected event scan so its subject
-    count is the exact union of subjects across rare codes.
+    Projected event rows are partitioned by subject on disk so exact distinct
+    counts remain additive with bounded aggregation state. Bucket mode reuses
+    those partitions to count the exact subject union across rare codes.
     """
 
     config = config or SummaryConfig()
@@ -76,14 +174,11 @@ def summarize(
     modifiers = code_modifier_columns(metadata_json)
     metadata = scan_code_metadata(root)
     events = scan_events(root, modifiers)
+    splits = None
     scope: list[str] = []
     split_columns: list[tuple[str, str, str]] = []
     if config.per_split or config.split_columns:
         splits = scan_subject_splits(root)
-        duplicate = (
-            splits.group_by("subject_id").len().filter(pl.col("len") > 1).limit(1)
-        )
-        _raise_if_any(duplicate, "subject_splits contains duplicate subject IDs")
         if config.split_columns:
             split_values = (
                 splits.select("split")
@@ -96,7 +191,6 @@ def summarize(
             if not split_values:
                 raise ValueError("subject_splits contains no splits")
             split_columns = _split_columns(split_values)
-        events = events.join(splits, on="subject_id", how="left")
         if config.per_split:
             scope.append("split")
 
@@ -106,9 +200,25 @@ def summarize(
     token = uuid4().hex
     counts_path = output.with_name(f".{output.name}.{token}.counts.parquet")
     staged_path = output.with_name(f".{output.name}.{token}.tmp{output.suffix}")
+    work_path = output.with_name(f".{output.name}.{token}.work")
 
     try:
-        _code_occurrences(events, count_keys, split_columns).sink_parquet(counts_path)
+        event_parts = _partition_by_subject(
+            events, work_path / "events", config.partitions
+        )
+        split_parts = (
+            _partition_by_subject(splits, work_path / "splits", config.partitions)
+            if splits is not None
+            else None
+        )
+        _sink_partitioned_counts(
+            event_parts,
+            split_parts,
+            count_keys,
+            split_columns,
+            work_path / "counts",
+            counts_path,
+        )
         counts = pl.scan_parquet(counts_path)
         if config.per_split:
             missing_split = counts.filter(pl.col("split").is_null()).limit(1)
@@ -151,11 +261,16 @@ def summarize(
             rare_keys = counts.filter(
                 pl.col("subject_count") < config.min_subjects
             ).select(count_keys)
-            rare_events = events.join(
-                rare_keys, on=count_keys, how="semi", nulls_equal=True
-            )
-            bucket = _rare_bucket(
-                rare_events, metadata, scope, split_columns, config
+            bucket = _partitioned_rare_bucket(
+                event_parts,
+                split_parts,
+                rare_keys,
+                metadata,
+                scope,
+                count_keys,
+                split_columns,
+                config,
+                work_path / "rare",
             ).select(columns)
             frames.append(bucket)
 
@@ -169,6 +284,7 @@ def summarize(
     finally:
         counts_path.unlink(missing_ok=True)
         staged_path.unlink(missing_ok=True)
+        shutil.rmtree(work_path, ignore_errors=True)
 
     return output
 
@@ -262,18 +378,36 @@ def _validate_metadata(
         )
 
 
-def _rare_bucket(
-    events: pl.LazyFrame,
+def _partitioned_rare_bucket(
+    event_parts: dict[str, Path],
+    split_parts: dict[str, Path] | None,
+    rare_keys: pl.LazyFrame,
     metadata: pl.LazyFrame,
     scope: Sequence[str],
+    count_keys: Sequence[str],
     split_columns: Sequence[tuple[str, str, str]],
     config: SummaryConfig,
+    partial_dir: Path,
 ) -> pl.LazyFrame:
+    partial_dir.mkdir(parents=True)
+    partial_paths = []
     expressions = _count_expressions(split_columns)
-    if scope:
-        result = events.group_by(list(scope)).agg(expressions)
-    else:
-        result = events.select(expressions)
+    for name, event_path in sorted(event_parts.items()):
+        events = _partition_events(event_path, split_parts, validate_splits=False)
+        rare_events = events.join(
+            rare_keys, on=list(count_keys), how="semi", nulls_equal=True
+        )
+        partial = (
+            rare_events.group_by(list(scope)).agg(expressions)
+            if scope
+            else rare_events.select(expressions)
+        )
+        path = partial_dir / f"{name}.parquet"
+        partial.sink_parquet(path, compression="lz4", maintain_order=False)
+        partial_paths.append(str(path))
+
+    count_columns = [*_COUNT_COLUMNS, *_split_count_names(split_columns)]
+    result = _sum_counts(pl.scan_parquet(partial_paths), scope, count_columns)
     result = result.filter(pl.col("subject_count") >= config.min_subjects)
     if split_columns:
         result = _mask_split_counts(result, split_columns, config.min_split_subjects)
@@ -288,7 +422,7 @@ def _rare_bucket(
     return _round_counts(
         result.with_columns(*values, pl.lit(True).alias("is_masked")),
         config.round_counts_to,
-        [*_COUNT_COLUMNS, *_split_count_names(split_columns)],
+        count_columns,
     )
 
 

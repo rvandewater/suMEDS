@@ -13,7 +13,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 authors = [
-    { name = "Robin van de Water", email = "r.p.vandewater@gmail.com" }
+    { name = "Robin P. van de Water", email = "robin.vandewater@hpi.de" }
 ]
 requires-python = ">=3.10, <3.15"
 dependencies = [
@@ -23,6 +23,9 @@ dependencies = [
     "pyyaml>=6",
     "tqdm>=4.67",
 ]
+
+[project.optional-dependencies]
+rt64 = ["polars[rt64]>=1.34"]
 
 [project.scripts]
 suMEDS = "sumeds.cli:main"

@@ -61,6 +61,8 @@ def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:
         SummaryConfig(min_subjects=0)
     with pytest.raises(ValueError, match="min_split_subjects"):
         SummaryConfig(min_split_subjects=0)
+    with pytest.raises(ValueError, match="partitions"):
+        SummaryConfig(partitions=0)
     with pytest.raises(ValueError, match="bucket.*drop"):
         SummaryConfig(rare_code_action="mask")
     with pytest.raises(ValueError, match="mutually exclusive"):

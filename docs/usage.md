@@ -31,6 +31,7 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `-c`, `--config PATH` | YAML configuration |
 | `--per-split`, `--no-per-split` | Emit one row per split instead of totals |
 | `--split-columns`, `--no-split-columns` | Add per-split columns alongside totals |
+| `--partitions N` | Temporary subject partitions used to bound memory |
 | `--min-subjects N` | Minimum unique subjects for an unmasked total/row |
 | `--min-split-subjects N` | Minimum subjects for a visible wide split cell |
 | `--rare-code-action bucket\|drop` | Combine or omit rare rows |
@@ -43,7 +44,9 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 CLI options override YAML values. A successful run replaces the target
 atomically and prints its path. A failed run leaves an existing output untouched.
 Outputs inside the source `data/` or `metadata/` directories are rejected to
-prevent dataset corruption.
+prevent dataset corruption. Runs create projected event partitions beside the
+output and remove them afterward; ensure that filesystem has sufficient free
+space. Install `sumeds[rt64]` for datasets exceeding 2³² rows.
 
 ## Examples
 

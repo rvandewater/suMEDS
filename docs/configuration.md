@@ -7,6 +7,7 @@ instead of silently weakening the privacy policy.
 summary:
   per_split: false
   split_columns: false
+  partitions: 256
 
 privacy:
   min_subjects: 20
@@ -42,6 +43,17 @@ use `min_subjects`; split cells use the separate `min_split_subjects` threshold.
 
 `per_split` and `split_columns` are mutually exclusive: the former is long
 (row-per-split) output, while the latter is wide output with totals.
+
+### `partitions`
+
+Default: `256`. Must be a positive integer.
+
+Event rows are temporarily partitioned by subject before exact code and
+unique-subject counts are computed. This bounds aggregation state and keeps
+subject counts additive across partitions. Increase the value if aggregation
+still exhausts memory; decrease it to use fewer temporary files. The projected
+temporary data can approach the size of the source event columns and is removed
+on completion or ordinary errors.
 
 ## Privacy options
 
