@@ -8,8 +8,8 @@ discover and define downstream tasks:
 - unique-subject occurrence counts;
 - optional counts per canonical subject split, as rows or columns beside totals;
 - configurable masking or removal of rare code cells;
-- optional descriptions, parents, domains, and concept identifiers from OHDSI
-  Athena CSV files or PostgreSQL.
+- optional descriptions, ancestor/descendant/sibling codes, domains, and concept
+  identifiers from OHDSI Athena CSV files or PostgreSQL.
 
 ## Data flow
 

@@ -13,4 +13,8 @@ privacy:
 # Optional local Athena source:
 # enrichment:
 #   csv_dir: /path/to/athena
+#   parent_codes: true
+#   child_codes: false
+#   sibling_codes: false
+#   child_depth: 3
 # Use `postgres: postgresql://postgres@localhost/omop` instead for PostgreSQL.

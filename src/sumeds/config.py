@@ -11,10 +11,14 @@ import yaml
 
 @dataclass(frozen=True)
 class EnrichmentConfig:
-    """Select exactly one OHDSI Athena concept source."""
+    """Select one OHDSI Athena source and hierarchy fields to add."""
 
     csv_dir: Path | None = None
     postgres: str | None = None
+    parent_codes: bool = True
+    child_codes: bool = False
+    sibling_codes: bool = False
+    child_depth: int = 3
 
     def __post_init__(self) -> None:
         if (self.csv_dir is None) == (self.postgres is None):
@@ -32,6 +36,22 @@ class EnrichmentConfig:
             not isinstance(self.postgres, str) or not self.postgres.strip()
         ):
             raise ValueError("enrichment.postgres must be a non-empty string")
+        for name in ("parent_codes", "child_codes", "sibling_codes"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"enrichment.{name} must be true or false")
+        if (
+            not isinstance(self.child_depth, int)
+            or isinstance(self.child_depth, bool)
+            or not 1 <= self.child_depth <= 100
+        ):
+            raise ValueError("enrichment.child_depth must be an integer from 1 to 100")
+
+    def with_overrides(self, **values: Any) -> EnrichmentConfig:
+        """Return a copy with non-``None`` CLI overrides applied."""
+
+        return replace(
+            self, **{key: value for key, value in values.items() if value is not None}
+        )
 
 
 @dataclass(frozen=True)
@@ -103,7 +123,17 @@ class SummaryConfig:
         unknown = (
             (set(summary) - summary_options)
             | (set(privacy) - privacy_options)
-            | (set(enrichment) - {"csv_dir", "postgres"})
+            | (
+                set(enrichment)
+                - {
+                    "csv_dir",
+                    "postgres",
+                    "parent_codes",
+                    "child_codes",
+                    "sibling_codes",
+                    "child_depth",
+                }
+            )
         )
         if unknown:
             raise ValueError(

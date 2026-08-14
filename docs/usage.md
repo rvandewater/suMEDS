@@ -39,6 +39,10 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--round-counts-to N` | Round released counts to a multiple |
 | `--athena-csv DIR` | Enrich released codes from local Athena files |
 | `--athena-postgres CONNINFO` | Enrich released codes through `psql` |
+| `--parent-codes`, `--no-parent-codes` | Enable/disable all-ancestor expansion (enabled by default) |
+| `--child-codes`, `--no-child-codes` | Enable/disable descendant expansion (disabled by default) |
+| `--sibling-codes`, `--no-sibling-codes` | Enable/disable children-of-ancestors expansion (disabled by default) |
+| `--child-depth N` | Maximum descendant depth (default `3`, range `1`–`100`) |
 | `--version` | Print the installed version |
 
 CLI options override YAML values. A successful run replaces the target
@@ -106,7 +110,9 @@ Parquet when exact nested types matter.
 | `split` | string | Present only for per-split output |
 | `code` | string | MEDS code or the configured rare sentinel |
 | `description` | string, nullable | Canonical description; null for masked rows |
-| `parent_codes` | list[string], nullable | Vocabulary parents; null for masked rows |
+| `parent_codes` | list[string], nullable | Existing values plus valid Athena ancestors through root by default |
+| `child_codes` | list[string], nullable | Existing values plus optional Athena descendants |
+| `sibling_codes` | list[string], nullable | Existing values plus optional children of Athena ancestors |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
 | `vocabulary_id` | string, nullable | Matched Athena vocabulary when enrichment is enabled |
 | `concept_id` | int64, nullable | Numeric OMOP concept identifier |

@@ -57,6 +57,24 @@ SummaryConfig(
 Set `enrichment=EnrichmentConfig(csv_dir=...)` or
 `EnrichmentConfig(postgres=...)` to enrich released summary rows.
 
+### `EnrichmentConfig`
+
+```python
+EnrichmentConfig(
+    csv_dir: Path | None = None,
+    postgres: str | None = None,
+    parent_codes: bool = True,
+    child_codes: bool = False,
+    sibling_codes: bool = False,
+    child_depth: int = 3,
+)
+```
+
+Select exactly one source. Parents expand through the root by default. Children
+and siblings are opt-in; `child_depth` accepts `1`–`100`. Existing relationship
+lists are merged without duplicates and newly added codes must be valid in the
+selected source.
+
 ### `enrich_metadata`
 
 ```python
@@ -67,7 +85,8 @@ enrich_metadata(
 ```
 
 Adds or fills Athena fields on an arbitrary lazy metadata or summary table.
-Existing non-null values are preserved.
+Existing scalar values are preserved and relationship lists are merged without
+replacement.
 
 ### `enrich_file`
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from sumeds import SummaryConfig
+from sumeds import EnrichmentConfig, SummaryConfig
 from sumeds.cli import main
 
 
@@ -47,6 +47,57 @@ privacy:
     assert result["code"].to_list() == ["A", "__RARE__"]
     assert "event_count_train" in result.columns
     assert result["event_count_held_out"].null_count() == result.height
+
+
+def test_cli_hierarchy_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    captured = {}
+
+    def fake_summarize(root, output, config):
+        captured["config"] = config
+        return output
+
+    monkeypatch.setattr("sumeds.cli.summarize", fake_summarize)
+    output = tmp_path / "summary.parquet"
+    assert (
+        main(
+            [
+                str(tmp_path / "meds"),
+                "-o",
+                str(output),
+                "--athena-csv",
+                str(tmp_path / "athena"),
+                "--no-parent-codes",
+                "--child-codes",
+                "--sibling-codes",
+                "--child-depth",
+                "2",
+            ]
+        )
+        == 0
+    )
+    assert captured["config"].enrichment == EnrichmentConfig(
+        csv_dir=tmp_path / "athena",
+        parent_codes=False,
+        child_codes=True,
+        sibling_codes=True,
+        child_depth=2,
+    )
+    assert f"Wrote {output}" in capsys.readouterr().out
+
+
+def test_hierarchy_cli_options_require_source(tmp_path: Path, capsys) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(tmp_path / "meds"),
+                "-o",
+                str(tmp_path / "summary.parquet"),
+                "--child-codes",
+            ]
+        )
+    assert "require an Athena enrichment source" in capsys.readouterr().err
 
 
 def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:

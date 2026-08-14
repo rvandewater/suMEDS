@@ -62,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     sources.add_argument(
         "--athena-postgres", help="enrich from PostgreSQL using this psql conninfo"
     )
+    _add_hierarchy_arguments(parser)
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -84,7 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rare_code_action=args.rare_code_action,
             rare_code_label=args.rare_code_label,
             round_counts_to=args.round_counts_to,
-            enrichment=_enrichment_from_args(args),
+            enrichment=_enrichment_from_args(args, config.enrichment),
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
@@ -114,6 +115,7 @@ def build_enrich_parser() -> argparse.ArgumentParser:
     sources.add_argument(
         "--athena-postgres", help="PostgreSQL connection string or conninfo"
     )
+    _add_hierarchy_arguments(parser)
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -136,12 +138,52 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _enrichment_from_args(args: argparse.Namespace) -> EnrichmentConfig | None:
+def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--parent-codes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add all valid ancestors (default: enabled)",
+    )
+    parser.add_argument(
+        "--child-codes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add valid descendants (default: disabled)",
+    )
+    parser.add_argument(
+        "--sibling-codes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add valid children of ancestor codes (default: disabled)",
+    )
+    parser.add_argument(
+        "--child-depth",
+        type=int,
+        help="maximum descendant depth (default: 3)",
+    )
+
+
+def _enrichment_from_args(
+    args: argparse.Namespace, current: EnrichmentConfig | None = None
+) -> EnrichmentConfig | None:
     if args.athena_csv is not None:
-        return EnrichmentConfig(csv_dir=args.athena_csv)
-    if args.athena_postgres is not None:
-        return EnrichmentConfig(postgres=args.athena_postgres)
-    return None
+        config = EnrichmentConfig(csv_dir=args.athena_csv)
+    elif args.athena_postgres is not None:
+        config = EnrichmentConfig(postgres=args.athena_postgres)
+    else:
+        config = current
+    options = {
+        "parent_codes": args.parent_codes,
+        "child_codes": args.child_codes,
+        "sibling_codes": args.sibling_codes,
+        "child_depth": args.child_depth,
+    }
+    if config is None:
+        if any(value is not None for value in options.values()):
+            raise ValueError("hierarchy options require an Athena enrichment source")
+        return None
+    return config.with_overrides(**options)
 
 
 if __name__ == "__main__":
