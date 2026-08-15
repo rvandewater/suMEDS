@@ -67,13 +67,15 @@ EnrichmentConfig(
     child_codes: bool = False,
     sibling_codes: bool = False,
     child_depth: int = 3,
+    exclude_self_parent_code: bool = True,
 )
 ```
 
 Select exactly one source. Parents expand through the root by default. Children
-and siblings are opt-in; `child_depth` accepts `1`–`100`. Existing relationship
-lists are merged without duplicates and newly added codes must be valid in the
-selected source.
+and siblings are opt-in; `child_depth` accepts `1`–`100`. Existing parent codes
+are normalized to `VOCABULARY//CODE`, with the lookup concept itself excluded by
+default. Existing relationship lists are merged without duplicates and newly
+added codes must be valid in the selected source.
 
 ### `enrich_metadata`
 

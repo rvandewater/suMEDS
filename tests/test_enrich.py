@@ -163,8 +163,16 @@ def test_csv_enrichment_resolves_common_and_versioned_codes(
     lab = rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
     assert lab["description"] == "Existing lab name"
-    assert lab["parent_codes"] == ["LOINC/5803-2"]
+    assert lab["parent_codes"] is None
     assert rows["malformed"]["parent_codes"] is None
+
+    retained = enrich_metadata(
+        frame,
+        EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=False),
+    ).collect()
+    assert retained.filter(pl.col("code") == "LAB//51491//units").to_dicts()[0][
+        "parent_codes"
+    ] == ["LOINC//5803-2"]
 
 
 def test_unmatched_relationship_arrays_pass_through(athena_csv: Path) -> None:
@@ -400,7 +408,7 @@ def test_standalone_handles_csv_and_null_columns(
     assert cms["parent_codes"] == "SNOMED//BRANCH|SNOMED//PARENT|SNOMED//ROOT"
     lab = csv_rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
-    assert lab["parent_codes"] == "LOINC/5803-2"
+    assert lab["parent_codes"] is None
 
     enrich_file(csv_input, parquet_output, EnrichmentConfig(csv_dir=athena_csv))
     assert pl.read_parquet(parquet_output).schema["concept_id"] == pl.Int64
@@ -509,6 +517,7 @@ def test_enrichment_config_is_strict(tmp_path: Path) -> None:
         "  parent_codes: false\n"
         "  child_codes: true\n"
         "  sibling_codes: true\n"
+        "  exclude_self_parent_code: false\n"
         "  child_depth: 2\n"
     )
     assert SummaryConfig.from_yaml(path).enrichment == EnrichmentConfig(
@@ -516,6 +525,7 @@ def test_enrichment_config_is_strict(tmp_path: Path) -> None:
         parent_codes=False,
         child_codes=True,
         sibling_codes=True,
+        exclude_self_parent_code=False,
         child_depth=2,
     )
 

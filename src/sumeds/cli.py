@@ -158,6 +158,12 @@ def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:
         help="add valid children of ancestor codes (default: disabled)",
     )
     parser.add_argument(
+        "--exclude-self-parent-code",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="remove an existing parent reference used as the Athena lookup (default: enabled)",
+    )
+    parser.add_argument(
         "--child-depth",
         type=int,
         help="maximum descendant depth (default: 3)",
@@ -177,6 +183,7 @@ def _enrichment_from_args(
         "parent_codes": args.parent_codes,
         "child_codes": args.child_codes,
         "sibling_codes": args.sibling_codes,
+        "exclude_self_parent_code": args.exclude_self_parent_code,
         "child_depth": args.child_depth,
     }
     if config is None:

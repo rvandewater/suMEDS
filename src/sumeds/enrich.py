@@ -28,7 +28,8 @@ _FIELDS = {
     "domain_id": pl.String,
     "standard_concept": pl.String,
 }
-_INTERNAL = {f"_athena_{name}" for name in _FIELDS}
+_MATCH_RANK = "_athena_match_rank"
+_INTERNAL = {f"_athena_{name}" for name in _FIELDS} | {_MATCH_RANK}
 _MATCH_SCHEMA = {
     "_target_code": pl.String,
     "_rank": pl.UInt8,
@@ -89,15 +90,31 @@ def enrich_metadata(frame: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFra
                 existing = existing.str.split("|")
             empty = pl.lit([], dtype=dtype)
             existing = existing.cast(dtype, strict=False)
+            present = existing.is_not_null() | incoming.is_not_null()
+            if name == "parent_codes":
+                existing = existing.list.eval(
+                    pl.when(pl.element().str.count_matches("/") == 1)
+                    .then(pl.element().str.replace("/", "//", literal=True))
+                    .otherwise(pl.element())
+                )
+                if config.exclude_self_parent_code:
+                    matched_by_parent = pl.col(_MATCH_RANK) == 2
+                    present = (
+                        pl.when(matched_by_parent)
+                        .then((existing.list.len() > 1) | incoming.is_not_null())
+                        .otherwise(present)
+                    )
+                    existing = (
+                        pl.when(matched_by_parent)
+                        .then(existing.list.slice(1))
+                        .otherwise(existing)
+                    )
             merged = pl.concat_list(
                 pl.coalesce(existing, empty),
                 pl.coalesce(incoming, empty),
             ).list.unique(maintain_order=True)
             expressions.append(
-                pl.when(existing.is_not_null() | incoming.is_not_null())
-                .then(merged)
-                .otherwise(None)
-                .alias(name)
+                pl.when(present).then(merged).otherwise(None).alias(name)
             )
         elif name not in schema:
             expressions.append(incoming.alias(name))
@@ -618,6 +635,7 @@ def _collapse_matches(matches: pl.LazyFrame) -> pl.LazyFrame:
     )
     collapsed = chosen.group_by(
         "_target_code",
+        "_rank",
         "description",
         "vocabulary_id",
         "concept_id",
@@ -636,6 +654,7 @@ def _collapse_matches(matches: pl.LazyFrame) -> pl.LazyFrame:
     )
     return collapsed.select(
         pl.col("_target_code").alias("code"),
+        pl.col("_rank").alias(_MATCH_RANK),
         *(
             pl.when(pl.col(name).list.len() > 0)
             .then(pl.col(name))

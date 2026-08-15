@@ -19,6 +19,7 @@ class EnrichmentConfig:
     child_codes: bool = False
     sibling_codes: bool = False
     child_depth: int = 3
+    exclude_self_parent_code: bool = True
 
     def __post_init__(self) -> None:
         if (self.csv_dir is None) == (self.postgres is None):
@@ -36,7 +37,12 @@ class EnrichmentConfig:
             not isinstance(self.postgres, str) or not self.postgres.strip()
         ):
             raise ValueError("enrichment.postgres must be a non-empty string")
-        for name in ("parent_codes", "child_codes", "sibling_codes"):
+        for name in (
+            "parent_codes",
+            "child_codes",
+            "sibling_codes",
+            "exclude_self_parent_code",
+        ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"enrichment.{name} must be true or false")
         if (
@@ -131,6 +137,7 @@ class SummaryConfig:
                     "parent_codes",
                     "child_codes",
                     "sibling_codes",
+                    "exclude_self_parent_code",
                     "child_depth",
                 }
             )

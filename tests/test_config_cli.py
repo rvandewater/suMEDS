@@ -71,6 +71,7 @@ def test_cli_hierarchy_options(
                 "--no-parent-codes",
                 "--child-codes",
                 "--sibling-codes",
+                "--no-exclude-self-parent-code",
                 "--child-depth",
                 "2",
             ]
@@ -82,6 +83,7 @@ def test_cli_hierarchy_options(
         parent_codes=False,
         child_codes=True,
         sibling_codes=True,
+        exclude_self_parent_code=False,
         child_depth=2,
     )
     assert f"Wrote {output}" in capsys.readouterr().out

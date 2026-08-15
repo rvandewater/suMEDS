@@ -20,10 +20,14 @@ For each valid Athena match, suMEDS adds or fills:
 | `domain_id` | string | OMOP domain |
 | `standard_concept` | string | `S`, `C`, or null |
 
-Existing relationship lists are merged without duplicates; they are never
-replaced. Newly added codes use `VOCABULARY//CONCEPT_CODE` and must resolve to a
-valid row in the same Athena `CONCEPT` source. Invalid, missing, self-referential,
-and cyclic hierarchy rows are ignored. Unmatched concepts pass through unchanged.
+Existing relationship lists are merged without duplicates. Parent references
+using `VOCABULARY/CONCEPT_CODE` are normalized to
+`VOCABULARY//CONCEPT_CODE`. By default, a parent reference used to resolve the
+matched concept itself is removed; retain it with
+`--no-exclude-self-parent-code` or `exclude_self_parent_code: false`. Newly
+added codes must resolve to a valid row in the same Athena `CONCEPT` source.
+Invalid, missing, self-referential, and cyclic hierarchy rows are ignored.
+Unmatched concepts pass through unchanged.
 Please check the [Athena search portal](https://athena.ohdsi.org/search-terms/start) to confirm.
 
 Parent expansion includes every positive `min_levels_of_separation` through the

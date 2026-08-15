@@ -115,8 +115,10 @@ YAML enrichment source.
 `parent_codes` defaults to `true` and adds all ancestors through the root.
 `child_codes` and `sibling_codes` default to `false`. When children are enabled,
 `child_depth` limits descendant levels and defaults to `3` (allowed range
-`1`–`100`). CLI equivalents are `--[no-]parent-codes`,
-`--[no-]child-codes`, `--[no-]sibling-codes`, and `--child-depth`. See
+`1`–`100`). `exclude_self_parent_code` defaults to `true`, removing a parent
+reference used to match the Athena concept itself. CLI equivalents are
+`--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
+`--[no-]exclude-self-parent-code`, and `--child-depth`. See
 [Athena enrichment](enrichment.md) for hierarchy semantics and output fields.
 
 ## Precedence
