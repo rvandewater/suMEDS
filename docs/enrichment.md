@@ -11,17 +11,30 @@ For each valid Athena match, suMEDS adds or fills:
 | Column | Type | Source |
 |---|---|---|
 | `description` | string | `concept.concept_name` |
-| `parent_codes` | list[string] | direct valid ancestors |
+| `parent_codes` | list[string] | all valid ancestors through the root (default) |
+| `child_codes` | list[string] | valid descendants up to `child_depth` (optional) |
+| `sibling_codes` | list[string] | valid direct children of every ancestor, excluding self (optional) |
 | `vocabulary_id` | string | `concept.vocabulary_id` |
 | `concept_id` | int64 | numeric OMOP concept identifier |
 | `concept_code` | string | vocabulary-local code |
 | `domain_id` | string | OMOP domain |
 | `standard_concept` | string | `S`, `C`, or null |
 
-Existing non-null values are preserved. Invalid and unmatched concepts remain
-null. Parents use `VOCABULARY//CONCEPT_CODE` and only
-`min_levels_of_separation = 1`; the complete transitive ancestor set is not
-copied into the output. Please check the [Athena search portal](https://athena.ohdsi.org/search-terms/start) to confirm.
+Existing relationship lists are merged without duplicates. Parent references
+using `VOCABULARY/CONCEPT_CODE` are normalized to
+`VOCABULARY//CONCEPT_CODE`. By default, a parent reference used to resolve the
+matched concept itself is removed; retain it with
+`--no-exclude-self-parent-code` or `exclude_self_parent_code: false`. Newly
+added codes must resolve to a valid row in the same Athena `CONCEPT` source.
+Invalid, missing, self-referential, and cyclic hierarchy rows are ignored.
+Unmatched concepts pass through unchanged.
+Please check the [Athena search portal](https://athena.ohdsi.org/search-terms/start) to confirm.
+
+Parent expansion includes every positive `min_levels_of_separation` through the
+root and is enabled by default. Disable it with `--no-parent-codes` or
+`parent_codes: false`. Child and sibling expansion are opt-in. Children include
+transitive descendants through `child_depth` (default `3`); siblings are the
+direct children of each valid ancestor, excluding the matched concept itself.
 
 ## Code parsing
 
@@ -47,7 +60,8 @@ tab-delimited `CONCEPT.csv` and `CONCEPT_ANCESTOR.csv` files:
 
 ```bash
 uv run suMEDS /data/MEDS -o summary.parquet \
-  --athena-csv /vocabularies/athena
+  --athena-csv /vocabularies/athena \
+  --child-codes --child-depth 3 --sibling-codes
 ```
 
 Polars projects only the required columns. Header matching is case-insensitive.
@@ -60,7 +74,8 @@ CSV `COPY` batch rather than one query per code.
 
 ```bash
 PGPASSWORD=... uv run suMEDS /data/MEDS -o summary.parquet \
-  --athena-postgres postgresql://postgres@127.0.0.1:5432/omop
+  --athena-postgres postgresql://postgres@127.0.0.1:5432/omop \
+  --child-codes --child-depth 3 --sibling-codes
 ```
 
 `psql` inherits the current process environment. Supply the password as the
@@ -83,8 +98,8 @@ uv run suMEDS-enrich /data/MEDS/metadata/codes.parquet \
 Parquet, CSV, JSON, JSONL, and NDJSON are supported. Input and output must be
 different paths, and the destination is replaced atomically. The CLI displays
 a `tqdm` phase-progress bar followed by row and unique-code match counts plus
-before/after coverage for descriptions, parent codes, concept IDs, vocabulary,
-domain, and standard-concept fields.
+before/after coverage for descriptions, relationship codes, concept IDs,
+vocabulary, domain, and standard-concept fields.
 
 ## Interactive demo
 

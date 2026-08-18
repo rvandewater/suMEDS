@@ -20,6 +20,10 @@ privacy:
 enrichment:
   csv_dir: /vocabularies/athena
   # postgres: postgresql://postgres@localhost/omop
+  parent_codes: true
+  child_codes: false
+  sibling_codes: false
+  child_depth: 3
 ```
 
 ## Summary options
@@ -106,8 +110,16 @@ multiple after thresholding. Use `1` or `null` for exact counts.
 Set exactly one of `csv_dir` or `postgres` under `enrichment`. Omitting the
 section disables enrichment. Relative CSV directories are resolved relative to
 the YAML file. CLI `--athena-csv` or `--athena-postgres` overrides the complete
-YAML enrichment source. See [Athena enrichment](enrichment.md) for required
-files, parsing, and output fields.
+YAML enrichment source.
+
+`parent_codes` defaults to `true` and adds all ancestors through the root.
+`child_codes` and `sibling_codes` default to `false`. When children are enabled,
+`child_depth` limits descendant levels and defaults to `3` (allowed range
+`1`–`100`). `exclude_self_parent_code` defaults to `true`, removing a parent
+reference used to match the Athena concept itself. CLI equivalents are
+`--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
+`--[no-]exclude-self-parent-code`, and `--child-depth`. See
+[Athena enrichment](enrichment.md) for hierarchy semantics and output fields.
 
 ## Precedence
 

@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rt64 = ["polars[rt64]>=1.34"]
+notebook = ["jupyter>=1.0", "ipykernel>=6.30"]
 
 [project.scripts]
 suMEDS = "sumeds.cli:main"

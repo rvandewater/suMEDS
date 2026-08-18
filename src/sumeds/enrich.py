@@ -14,16 +14,22 @@ from tqdm.auto import tqdm
 from .config import EnrichmentConfig
 from .io import output_format, scan_table, sink_table
 
+_RELATIONSHIPS = {
+    "parent_codes": "parent",
+    "child_codes": "child",
+    "sibling_codes": "sibling",
+}
 _FIELDS = {
     "description": pl.String,
-    "parent_codes": pl.List(pl.String),
+    **{name: pl.List(pl.String) for name in _RELATIONSHIPS},
     "vocabulary_id": pl.String,
     "concept_id": pl.Int64,
     "concept_code": pl.String,
     "domain_id": pl.String,
     "standard_concept": pl.String,
 }
-_INTERNAL = {f"_athena_{name}" for name in _FIELDS}
+_MATCH_RANK = "_athena_match_rank"
+_INTERNAL = {f"_athena_{name}" for name in _FIELDS} | {_MATCH_RANK}
 _MATCH_SCHEMA = {
     "_target_code": pl.String,
     "_rank": pl.UInt8,
@@ -33,13 +39,15 @@ _MATCH_SCHEMA = {
     "concept_code": pl.String,
     "domain_id": pl.String,
     "standard_concept": pl.String,
-    "_parent_vocabulary_id": pl.String,
-    "_parent_concept_code": pl.String,
+    "_relationship": pl.String,
+    "_related_vocabulary_id": pl.String,
+    "_related_concept_code": pl.String,
 }
+_MATCH_COLUMNS = tuple(_MATCH_SCHEMA)
 
 
 def enrich_metadata(frame: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFrame:
-    """Fill missing metadata fields from the configured Athena source.
+    """Fill scalar metadata and merge configured hierarchy fields from Athena.
 
     Codes are resolved as ``VOCABULARY//CODE//...`` first. For an ambiguous
     three-part code, the third component is tried only when the second has no
@@ -62,24 +70,60 @@ def enrich_metadata(frame: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFra
         else frame
     )
     if config.csv_dir is not None:
-        matches = _csv_matches(candidates, config.csv_dir)
+        matches = _csv_matches(candidates, config.csv_dir, config)
     else:
-        matches = _postgres_matches(candidates, config.postgres or "")
+        matches = _postgres_matches(candidates, config.postgres or "", config)
     enrichment = _collapse_matches(matches)
     joined = frame.join(enrichment, on="code", how="left", maintain_order="left")
 
     expressions = []
     for name, dtype in _FIELDS.items():
         incoming = pl.col(f"_athena_{name}").cast(dtype, strict=False)
-        if name not in schema:
+        if name in _RELATIONSHIPS:
+            if not getattr(config, name):
+                continue
+            if name not in schema:
+                expressions.append(incoming.alias(name))
+                continue
+            existing = pl.col(name)
+            if schema[name] == pl.String:
+                existing = existing.str.split("|")
+            empty = pl.lit([], dtype=dtype)
+            existing = existing.cast(dtype, strict=False)
+            present = existing.is_not_null() | incoming.is_not_null()
+            if name == "parent_codes":
+                existing = existing.list.eval(
+                    pl.when(pl.element().str.count_matches("/") == 1)
+                    .then(pl.element().str.replace("/", "//", literal=True))
+                    .otherwise(pl.element())
+                )
+                if config.exclude_self_parent_code:
+                    matched_by_parent = pl.col(_MATCH_RANK) == 2
+                    present = (
+                        pl.when(matched_by_parent)
+                        .then((existing.list.len() > 1) | incoming.is_not_null())
+                        .otherwise(present)
+                    )
+                    existing = (
+                        pl.when(matched_by_parent)
+                        .then(existing.list.slice(1))
+                        .otherwise(existing)
+                    )
+            merged = pl.concat_list(
+                pl.coalesce(existing, empty),
+                pl.coalesce(incoming, empty),
+            ).list.unique(maintain_order=True)
+            expressions.append(
+                pl.when(present).then(merged).otherwise(None).alias(name)
+            )
+        elif name not in schema:
             expressions.append(incoming.alias(name))
-            continue
-        existing = pl.col(name)
-        if name == "parent_codes" and schema[name] == pl.String:
-            existing = existing.str.split("|")
-        expressions.append(
-            pl.coalesce(existing.cast(dtype, strict=False), incoming).alias(name)
-        )
+        else:
+            expressions.append(
+                pl.coalesce(pl.col(name).cast(dtype, strict=False), incoming).alias(
+                    name
+                )
+            )
     return joined.with_columns(expressions).drop(*sorted(_INTERNAL))
 
 
@@ -186,6 +230,8 @@ def _print_enrichment_report(
     labels = {
         "description": "Descriptions",
         "parent_codes": "Parent-code lists",
+        "child_codes": "Child-code lists",
+        "sibling_codes": "Sibling-code lists",
         "vocabulary_id": "Vocabulary IDs",
         "concept_id": "OMOP concept IDs",
         "concept_code": "Concept codes",
@@ -260,7 +306,9 @@ def _code_candidates(frame: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _csv_matches(candidates: pl.LazyFrame, directory: Path) -> pl.LazyFrame:
+def _csv_matches(
+    candidates: pl.LazyFrame, directory: Path, config: EnrichmentConfig
+) -> pl.LazyFrame:
     directory = Path(directory).expanduser().resolve()
     concepts = _scan_athena_csv(
         directory / "CONCEPT.csv",
@@ -274,35 +322,35 @@ def _csv_matches(candidates: pl.LazyFrame, directory: Path) -> pl.LazyFrame:
             "invalid_reason": pl.String,
         },
     ).filter(pl.col("invalid_reason").is_null())
-    ancestors = _scan_athena_csv(
-        directory / "CONCEPT_ANCESTOR.csv",
-        {
-            "ancestor_concept_id": pl.Int64,
-            "descendant_concept_id": pl.Int64,
-            "min_levels_of_separation": pl.Int64,
-        },
-    ).filter(pl.col("min_levels_of_separation") == 1)
 
-    parents = ancestors.join(
-        concepts.select(
-            pl.col("concept_id").alias("ancestor_concept_id"),
-            pl.col("vocabulary_id").alias("_parent_vocabulary_id"),
-            pl.col("concept_code").alias("_parent_concept_code"),
-        ),
-        on="ancestor_concept_id",
-        how="inner",
-    )
-    return (
+    # If any of the hierarchy options are requested, load the CONCEPT_ANCESTOR.csv
+    # and filter out any ancestor/descendant pairs that are also reversed in the file.
+    if config.child_codes or config.sibling_codes or config.parent_codes:
+        hierarchy = _scan_athena_csv(
+            directory / "CONCEPT_ANCESTOR.csv",
+            {
+                "ancestor_concept_id": pl.Int64,
+                "descendant_concept_id": pl.Int64,
+                "min_levels_of_separation": pl.Int64,
+            },
+        ).filter(
+            (pl.col("min_levels_of_separation") > 0)
+            & (pl.col("ancestor_concept_id") != pl.col("descendant_concept_id"))
+        )
+        reverse = hierarchy.select(
+            pl.col("descendant_concept_id").alias("ancestor_concept_id"),
+            pl.col("ancestor_concept_id").alias("descendant_concept_id"),
+        ).unique()
+        hierarchy = hierarchy.join(
+            reverse,
+            on=["ancestor_concept_id", "descendant_concept_id"],
+            how="anti",
+        )
+    matches = (
         candidates.join(
             concepts,
             on=["vocabulary_id", "concept_code"],
             how="inner",
-        )
-        .join(
-            parents,
-            left_on="concept_id",
-            right_on="descendant_concept_id",
-            how="left",
         )
         .select(
             "_target_code",
@@ -313,9 +361,93 @@ def _csv_matches(candidates: pl.LazyFrame, directory: Path) -> pl.LazyFrame:
             "concept_code",
             "domain_id",
             "standard_concept",
-            "_parent_vocabulary_id",
-            "_parent_concept_code",
         )
+        .unique()
+    )
+    related = concepts.select(
+        pl.col("concept_id").alias("_related_concept_id"),
+        pl.col("vocabulary_id").alias("_related_vocabulary_id"),
+        pl.col("concept_code").alias("_related_concept_code"),
+    )
+    rows = [
+        matches.select(
+            *_MATCH_COLUMNS[:-3],
+            pl.lit(None, dtype=pl.String).alias("_relationship"),
+            pl.lit(None, dtype=pl.String).alias("_related_vocabulary_id"),
+            pl.lit(None, dtype=pl.String).alias("_related_concept_code"),
+        )
+    ]
+    if config.parent_codes:
+        rows.append(
+            _relation_rows(
+                matches.join(
+                    hierarchy,
+                    left_on="concept_id",
+                    right_on="descendant_concept_id",
+                    how="inner",
+                ).join(
+                    related,
+                    left_on="ancestor_concept_id",
+                    right_on="_related_concept_id",
+                    how="inner",
+                ),
+                "parent",
+            )
+        )
+    if config.child_codes:
+        rows.append(
+            _relation_rows(
+                matches.join(
+                    hierarchy.filter(
+                        pl.col("min_levels_of_separation") <= config.child_depth
+                    ),
+                    left_on="concept_id",
+                    right_on="ancestor_concept_id",
+                    how="inner",
+                ).join(
+                    related,
+                    left_on="descendant_concept_id",
+                    right_on="_related_concept_id",
+                    how="inner",
+                ),
+                "child",
+            )
+        )
+    if config.sibling_codes:
+        parents = (
+            hierarchy.select(
+                pl.col("descendant_concept_id").alias("concept_id"),
+                pl.col("ancestor_concept_id").alias("_parent_concept_id"),
+            )
+            .join(
+                concepts.select(pl.col("concept_id").alias("_parent_concept_id")),
+                on="_parent_concept_id",
+                how="inner",
+            )
+            .unique()
+        )
+        children = hierarchy.filter(pl.col("min_levels_of_separation") == 1).select(
+            pl.col("ancestor_concept_id").alias("_parent_concept_id"),
+            pl.col("descendant_concept_id").alias("_related_concept_id"),
+        )
+        rows.append(
+            _relation_rows(
+                matches.join(parents, on="concept_id", how="inner")
+                .join(children, on="_parent_concept_id", how="inner")
+                .filter(pl.col("_related_concept_id") != pl.col("concept_id"))
+                .join(related, on="_related_concept_id", how="inner"),
+                "sibling",
+            )
+        )
+    return pl.concat(rows)
+
+
+def _relation_rows(frame: pl.LazyFrame, relationship: str) -> pl.LazyFrame:
+    return frame.select(
+        *_MATCH_COLUMNS[:-3],
+        pl.lit(relationship).alias("_relationship"),
+        "_related_vocabulary_id",
+        "_related_concept_code",
     )
 
 
@@ -340,7 +472,9 @@ def _scan_athena_csv(path: Path, columns: dict[str, pl.DataType]) -> pl.LazyFram
     )
 
 
-def _postgres_matches(candidates: pl.LazyFrame, connection: str) -> pl.LazyFrame:
+def _postgres_matches(
+    candidates: pl.LazyFrame, connection: str, config: EnrichmentConfig
+) -> pl.LazyFrame:
     requested = candidates.collect(engine="streaming")
     if requested.is_empty():
         return pl.DataFrame(schema=_MATCH_SCHEMA).lazy()
@@ -356,6 +490,62 @@ def _postgres_matches(candidates: pl.LazyFrame, connection: str) -> pl.LazyFrame
     writer = csv.writer(data, lineterminator="\n")
     writer.writerow(["_target_code", "vocabulary_id", "concept_code", "_rank"])
     writer.writerows(requested.iter_rows())
+    relationship_queries = []
+    if config.parent_codes:
+        relationship_queries.append(
+            """
+SELECT m._target_code, m._rank, m.concept_id,
+       'parent'::text AS _relationship,
+       related.vocabulary_id AS _related_vocabulary_id,
+       related.concept_code AS _related_concept_code
+FROM chosen m
+JOIN hierarchy h ON h.descendant_concept_id = m.concept_id
+JOIN concept related ON related.concept_id = h.ancestor_concept_id
+                    AND related.invalid_reason IS NULL
+"""
+        )
+    if config.child_codes:
+        relationship_queries.append(
+            f"""
+SELECT m._target_code, m._rank, m.concept_id,
+       'child'::text AS _relationship,
+       related.vocabulary_id AS _related_vocabulary_id,
+       related.concept_code AS _related_concept_code
+FROM chosen m
+JOIN hierarchy h ON h.ancestor_concept_id = m.concept_id
+                AND h.min_levels_of_separation <= {config.child_depth}
+JOIN concept related ON related.concept_id = h.descendant_concept_id
+                    AND related.invalid_reason IS NULL
+"""
+        )
+    if config.sibling_codes:
+        relationship_queries.append(
+            """
+SELECT m._target_code, m._rank, m.concept_id,
+       'sibling'::text AS _relationship,
+       related.vocabulary_id AS _related_vocabulary_id,
+       related.concept_code AS _related_concept_code
+FROM chosen m
+JOIN hierarchy parent_h ON parent_h.descendant_concept_id = m.concept_id
+JOIN concept parent ON parent.concept_id = parent_h.ancestor_concept_id
+                   AND parent.invalid_reason IS NULL
+JOIN hierarchy child_h ON child_h.ancestor_concept_id = parent_h.ancestor_concept_id
+                      AND child_h.min_levels_of_separation = 1
+JOIN concept related ON related.concept_id = child_h.descendant_concept_id
+                    AND related.invalid_reason IS NULL
+WHERE related.concept_id <> m.concept_id
+"""
+        )
+    relationships = (
+        "\nUNION ALL\n".join(relationship_queries)
+        or """
+SELECT NULL::text AS _target_code, NULL::smallint AS _rank,
+       NULL::bigint AS concept_id, NULL::text AS _relationship,
+       NULL::text AS _related_vocabulary_id,
+       NULL::text AS _related_concept_code
+WHERE false
+"""
+    )
     script = f"""
 CREATE TEMP TABLE requested (
     _target_code text,
@@ -373,6 +563,20 @@ WITH matches AS (
 ), chosen AS (
     SELECT * FROM matches m
     WHERE _rank = (SELECT min(_rank) FROM matches WHERE _target_code = m._target_code)
+), hierarchy AS (
+    SELECT ca.*
+    FROM concept_ancestor ca
+    WHERE ca.min_levels_of_separation > 0
+      AND ca.ancestor_concept_id <> ca.descendant_concept_id
+      AND NOT EXISTS (
+          SELECT 1
+          FROM concept_ancestor rev
+          WHERE rev.ancestor_concept_id = ca.descendant_concept_id
+            AND rev.descendant_concept_id = ca.ancestor_concept_id
+            AND rev.min_levels_of_separation > 0
+      )
+), relationships AS (
+{relationships}
 )
 SELECT
     m._target_code,
@@ -383,16 +587,16 @@ SELECT
     m.concept_code,
     m.domain_id,
     m.standard_concept,
-    p.vocabulary_id AS _parent_vocabulary_id,
-    p.concept_code AS _parent_concept_code
+    r._relationship,
+    r._related_vocabulary_id,
+    r._related_concept_code
 FROM chosen m
-LEFT JOIN concept_ancestor ca
-    ON ca.descendant_concept_id = m.concept_id
-   AND ca.min_levels_of_separation = 1
-LEFT JOIN concept p
-    ON p.concept_id = ca.ancestor_concept_id
-   AND p.invalid_reason IS NULL
-ORDER BY m._target_code, p.concept_id;
+LEFT JOIN relationships r
+    ON r._target_code = m._target_code
+   AND r._rank = m._rank
+   AND r.concept_id = m.concept_id
+ORDER BY m._target_code, m.concept_id, r._relationship,
+         r._related_vocabulary_id, r._related_concept_code;
 """
     try:
         result = subprocess.run(
@@ -424,39 +628,43 @@ def _collapse_matches(matches: pl.LazyFrame) -> pl.LazyFrame:
     best = matches.with_columns(
         pl.col("_rank").min().over("_target_code").alias("_best_rank")
     ).filter(pl.col("_rank") == pl.col("_best_rank"))
-    parents = (
-        pl.concat_str(
-            "_parent_vocabulary_id",
-            "_parent_concept_code",
-            separator="//",
-            ignore_nulls=False,
-        )
+    chosen = best.with_columns(
+        pl.col("concept_id").min().over("_target_code").alias("_chosen_concept_id")
+    ).filter(pl.col("concept_id") == pl.col("_chosen_concept_id"))
+    related_code = pl.concat_str(
+        "_related_vocabulary_id",
+        "_related_concept_code",
+        separator="//",
+        ignore_nulls=False,
+    )
+    collapsed = chosen.group_by(
+        "_target_code",
+        "_rank",
+        "description",
+        "vocabulary_id",
+        "concept_id",
+        "concept_code",
+        "domain_id",
+        "standard_concept",
+    ).agg(
+        pl.when(pl.col("_relationship") == relationship)
+        .then(related_code)
+        .otherwise(None)
         .drop_nulls()
         .unique()
         .sort()
-    )
-    collapsed = (
-        best.group_by(
-            "_target_code",
-            "description",
-            "vocabulary_id",
-            "concept_id",
-            "concept_code",
-            "domain_id",
-            "standard_concept",
-        )
-        .agg(parents.alias("parent_codes"))
-        .sort("concept_id")
-        .unique("_target_code", keep="first")
+        .alias(name)
+        for name, relationship in _RELATIONSHIPS.items()
     )
     return collapsed.select(
         pl.col("_target_code").alias("code"),
+        pl.col("_rank").alias(_MATCH_RANK),
         *(
             pl.when(pl.col(name).list.len() > 0)
             .then(pl.col(name))
             .otherwise(None)
             .alias(f"_athena_{name}")
-            if name == "parent_codes"
+            if name in _RELATIONSHIPS
             else pl.col(name).alias(f"_athena_{name}")
             for name in _FIELDS
         ),

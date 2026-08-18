@@ -17,8 +17,9 @@ datasets. MEDS data should be "summed" in this way in a storage-efficient format
 
 
 It can be seen as a form of "extended metadata," as we sometimes need more information than vanilla MEDS metadata provides, but don't want to expose our complete dataset (either because of privacy concerns, storage capacity, or token use efficiency for LLMs).
-It (currently) simply joins canonical descriptions and parent codes to the event and the unique-subject
-counts, then masks or removes rare codes before writing Parquet, CSV, or JSON.
+It joins canonical descriptions and configurable parent, child, and sibling
+codes to event and unique-subject counts, then masks or removes rare codes
+before writing Parquet, CSV, or JSON.
 
 > [!WARNING]
 > This package is in early development and is human-guided, but AI-agent-generated. It is not yet reviewed for production use. Please report issues and suggestions.
@@ -73,12 +74,13 @@ uv run suMEDS /path/to/MEDS -o summary.json -c examples/summary.yaml
 CLI flags override YAML. The defaults bucket codes seen in fewer than 20 unique
 subjects and retain exact counts.
 
-Optionally fill missing descriptions, direct parents, OMOP concept IDs, domains,
-and standard-concept markers from OHDSI Athena:
+Optionally fill missing descriptions, all ancestors, OMOP concept IDs, domains,
+and standard-concept markers from OHDSI Athena. Child and sibling expansion are
+opt-in:
 
 ```bash
 uv run suMEDS /path/to/MEDS -o summary.parquet \
-  --athena-csv /path/to/athena
+  --athena-csv /path/to/athena --child-codes --child-depth 3 --sibling-codes
 # Or use PostgreSQL through the installed psql client:
 uv run suMEDS /path/to/MEDS -o summary.parquet \
   --athena-postgres postgresql://postgres@localhost/omop
