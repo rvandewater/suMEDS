@@ -42,6 +42,7 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--parent-codes`, `--no-parent-codes` | Enable/disable all-ancestor expansion (enabled by default) |
 | `--child-codes`, `--no-child-codes` | Enable/disable descendant expansion (disabled by default) |
 | `--sibling-codes`, `--no-sibling-codes` | Enable/disable children-of-ancestors expansion (disabled by default) |
+| `--exclude-self-parent-code`, `--no-exclude-self-parent-code` | Exclude/retain a lookup parent reference in `parent_codes` (enabled by default) |
 | `--child-depth N` | Maximum descendant depth (default `3`, range `1`–`100`) |
 | `--version` | Print the installed version |
 
