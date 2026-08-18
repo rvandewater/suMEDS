@@ -322,26 +322,30 @@ def _csv_matches(
             "invalid_reason": pl.String,
         },
     ).filter(pl.col("invalid_reason").is_null())
-    hierarchy = _scan_athena_csv(
-        directory / "CONCEPT_ANCESTOR.csv",
-        {
-            "ancestor_concept_id": pl.Int64,
-            "descendant_concept_id": pl.Int64,
-            "min_levels_of_separation": pl.Int64,
-        },
-    ).filter(
-        (pl.col("min_levels_of_separation") > 0)
-        & (pl.col("ancestor_concept_id") != pl.col("descendant_concept_id"))
-    )
-    reverse = hierarchy.select(
-        pl.col("descendant_concept_id").alias("ancestor_concept_id"),
-        pl.col("ancestor_concept_id").alias("descendant_concept_id"),
-    ).unique()
-    hierarchy = hierarchy.join(
-        reverse,
-        on=["ancestor_concept_id", "descendant_concept_id"],
-        how="anti",
-    )
+
+    # If any of the hierarchy options are requested, load the CONCEPT_ANCESTOR.csv
+    # and filter out any ancestor/descendant pairs that are also reversed in the file.
+    if config.child_codes or config.sibling_codes or config.parent_codes:
+        hierarchy = _scan_athena_csv(
+            directory / "CONCEPT_ANCESTOR.csv",
+            {
+                "ancestor_concept_id": pl.Int64,
+                "descendant_concept_id": pl.Int64,
+                "min_levels_of_separation": pl.Int64,
+            },
+        ).filter(
+            (pl.col("min_levels_of_separation") > 0)
+            & (pl.col("ancestor_concept_id") != pl.col("descendant_concept_id"))
+        )
+        reverse = hierarchy.select(
+            pl.col("descendant_concept_id").alias("ancestor_concept_id"),
+            pl.col("ancestor_concept_id").alias("descendant_concept_id"),
+        ).unique()
+        hierarchy = hierarchy.join(
+            reverse,
+            on=["ancestor_concept_id", "descendant_concept_id"],
+            how="anti",
+        )
     matches = (
         candidates.join(
             concepts,
