@@ -8,6 +8,8 @@ summary:
   per_split: false
   split_columns: false
   partitions: 256
+  numeric_stats: false
+  numeric_ci_level: 0.95
 
 privacy:
   min_subjects: 20
@@ -58,6 +60,35 @@ subject counts additive across partitions. Increase the value if aggregation
 still exhausts memory; decrease it to use fewer temporary files. The projected
 temporary data can approach the size of the source event columns and is removed
 on completion or ordinary errors.
+
+### `numeric_stats`
+
+Default: `false` (no numeric columns).
+
+Summarizes each released code's `numeric_value`. Use `true` for every
+statistic, or a list chosen from `min`, `max`, `mean` (alias `avg`), `median`,
+`std`, and `ci`. Output columns are `numeric_count` plus `numeric_<stat>`;
+`ci` adds `numeric_ci_lower` and `numeric_ci_upper`. Columns follow that
+canonical order regardless of the order given.
+
+- Null, NaN, and infinite values are ignored. Shards without the optional
+  `numeric_value` column contribute no values.
+- `std` is the sample standard deviation (n − 1); `ci` is the
+  normal-approximation interval `mean ± z · std / √n`.
+- Statistics are released only when at least `min_subjects` distinct subjects
+  contribute values to that cell; otherwise every `numeric_*` column is null.
+  The `__RARE__` bucket row never carries statistics. `numeric_count` is
+  rounded with `round_counts_to`.
+- With `per_split`, statistics are per split. With `split_columns`, they
+  describe the total only.
+- Count, min, max, mean, and std are merged exactly from the existing subject
+  partitions. `median` needs one extra pass that holds every value of each
+  released code in memory, so omit it for very large datasets if memory is
+  tight.
+
+### `numeric_ci_level`
+
+Default: `0.95`. Must lie strictly between 0 and 1.
 
 ## Privacy options
 

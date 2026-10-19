@@ -122,6 +122,9 @@ The output format is inferred from `.parquet`, `.csv`, or `.json` (with
 per split. `split_columns=True` keeps the total row and adds columns such as
 `event_count_train` and `subject_count_train` from `subject_splits.parquet`.
 Set `min_split_subjects` above 1 to suppress rare split-level cells.
+`numeric_stats=True` (CLI `--numeric-stats`) adds per-code `numeric_value`
+statistics: count, min, max, mean, median, std, and a confidence interval, or
+any subset such as `numeric_stats=["mean", "std"]`.
 
 ## Documentation
 

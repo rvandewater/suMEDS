@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from statistics import NormalDist
 from typing import Sequence
 from uuid import uuid4
 
@@ -24,6 +25,14 @@ from .scan import (
 
 _COUNT_COLUMNS = ("event_count", "subject_count")
 _RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_masked", "split"}
+_NUMERIC_PARTIALS = (
+    "_numeric_count",
+    "_numeric_subjects",
+    "_numeric_min",
+    "_numeric_max",
+    "_numeric_mean",
+    "_numeric_m2",
+)
 
 
 def code_occurrences(
@@ -40,8 +49,11 @@ def _code_occurrences(
     events: pl.LazyFrame,
     keys: Sequence[str],
     split_columns: Sequence[tuple[str, str, str]],
+    numeric: bool = False,
 ) -> pl.LazyFrame:
     expressions = _count_expressions(split_columns)
+    if numeric:
+        expressions.extend(_numeric_partial_expressions())
     if split_columns:
         expressions.append(
             pl.col("split")
@@ -112,9 +124,13 @@ def _partial_count_names(
 
 
 def _sum_counts(
-    frame: pl.LazyFrame, keys: Sequence[str], columns: Sequence[str]
+    frame: pl.LazyFrame,
+    keys: Sequence[str],
+    columns: Sequence[str],
+    extra: Sequence[pl.Expr] = (),
 ) -> pl.LazyFrame:
     expressions = [pl.col(name).sum().cast(pl.UInt64).alias(name) for name in columns]
+    expressions.extend(extra)
     return (
         frame.group_by(list(keys)).agg(expressions)
         if keys
@@ -129,6 +145,7 @@ def _sink_partitioned_counts(
     split_columns: Sequence[tuple[str, str, str]],
     partial_dir: Path,
     output: Path,
+    numeric: bool = False,
 ) -> None:
     if not event_parts:
         raise ValueError("MEDS data contains no events")
@@ -140,6 +157,7 @@ def _sink_partitioned_counts(
             _partition_events(event_path, split_parts, validate_splits=True),
             keys,
             split_columns,
+            numeric,
         ).sink_parquet(path, compression="lz4", maintain_order=False)
         partial_paths.append(str(path))
     # Subjects occur in exactly one hash partition, so exact subject counts add.
@@ -147,6 +165,7 @@ def _sink_partitioned_counts(
         pl.scan_parquet(partial_paths),
         keys,
         _partial_count_names(split_columns),
+        _merge_numeric_partials() if numeric else (),
     ).sink_parquet(output, maintain_order=False)
 
 
@@ -173,7 +192,8 @@ def summarize(
     metadata_json = read_dataset_metadata(root)
     modifiers = code_modifier_columns(metadata_json)
     metadata = scan_code_metadata(root)
-    events = scan_events(root, modifiers)
+    numeric_stats = config.numeric_stats
+    events = scan_events(root, modifiers, numeric=bool(numeric_stats))
     splits = None
     scope: list[str] = []
     split_columns: list[tuple[str, str, str]] = []
@@ -197,6 +217,7 @@ def summarize(
     base_keys = ["code", *modifiers]
     count_keys = [*scope, *base_keys]
     split_count_names = _split_count_names(split_columns)
+    numeric_columns = _numeric_columns(numeric_stats)
     token = uuid4().hex
     counts_path = output.with_name(f".{output.name}.{token}.counts.parquet")
     staged_path = output.with_name(f".{output.name}.{token}.tmp{output.suffix}")
@@ -218,6 +239,7 @@ def summarize(
             split_columns,
             work_path / "counts",
             counts_path,
+            numeric=bool(numeric_stats),
         )
         counts = pl.scan_parquet(counts_path)
         if config.per_split:
@@ -235,13 +257,26 @@ def summarize(
         safe = counts.filter(pl.col("subject_count") >= config.min_subjects)
         if split_columns:
             safe = _mask_split_counts(safe, split_columns, config.min_split_subjects)
+        if numeric_stats:
+            medians = None
+            if "median" in numeric_stats:
+                medians = _sink_medians(
+                    event_parts,
+                    split_parts if config.per_split else None,
+                    safe.select(count_keys),
+                    count_keys,
+                    work_path / "median.parquet",
+                )
+            safe = _numeric_statistics(safe, medians, count_keys, config)
         metadata = metadata.join(
             safe.select(base_keys),
             on=base_keys,
             how="semi",
             nulls_equal=True,
         )
-        _validate_metadata(metadata, modifiers, config, split_count_names)
+        _validate_metadata(
+            metadata, modifiers, config, [*split_count_names, *numeric_columns]
+        )
         common = safe.join(
             metadata, on=base_keys, how="left", nulls_equal=True
         ).with_columns(pl.lit(False).alias("is_masked"))
@@ -250,11 +285,14 @@ def summarize(
             *scope,
             *metadata.collect_schema().names(),
             *count_columns,
+            *numeric_columns,
             "is_masked",
         ]
-        common = _round_counts(common, config.round_counts_to, count_columns).select(
-            columns
-        )
+        common = _round_counts(
+            common,
+            config.round_counts_to,
+            [*count_columns, *numeric_columns[:1]],
+        ).select(columns)
 
         frames = [common]
         if config.rare_code_action == "bucket":
@@ -271,6 +309,13 @@ def summarize(
                 split_columns,
                 config,
                 work_path / "rare",
+            )
+            # Mixed-code values have no meaning, so the bucket carries none.
+            bucket = bucket.with_columns(
+                pl.lit(
+                    None, dtype=pl.UInt64 if name == "numeric_count" else pl.Float64
+                ).alias(name)
+                for name in numeric_columns
             ).select(columns)
             frames.append(bucket)
 
@@ -326,6 +371,106 @@ def _count_expressions(
             ]
         )
     return expressions
+
+
+def _numeric_columns(stats: Sequence[str]) -> list[str]:
+    if not stats:
+        return []
+    names = ["numeric_count"]
+    for stat in stats:
+        if stat == "ci":
+            names.extend(("numeric_ci_lower", "numeric_ci_upper"))
+        else:
+            names.append(f"numeric_{stat}")
+    return names
+
+
+def _numeric_partial_expressions() -> list[pl.Expr]:
+    finite = pl.col("numeric_value").is_finite()
+    value = pl.col("numeric_value").filter(finite)
+    return [
+        value.count().cast(pl.UInt64).alias("_numeric_count"),
+        pl.col("subject_id")
+        .filter(finite)
+        .n_unique()
+        .cast(pl.UInt64)
+        .alias("_numeric_subjects"),
+        value.min().alias("_numeric_min"),
+        value.max().alias("_numeric_max"),
+        value.mean().alias("_numeric_mean"),
+        ((value - value.mean()) ** 2).sum().alias("_numeric_m2"),
+    ]
+
+
+def _merge_numeric_partials() -> list[pl.Expr]:
+    count = pl.col("_numeric_count")
+    mean = (count * pl.col("_numeric_mean")).sum() / count.sum()
+    return [
+        count.sum().cast(pl.UInt64).alias("_numeric_count"),
+        # Subjects occur in one partition, so value-bearing subject counts add.
+        pl.col("_numeric_subjects").sum().cast(pl.UInt64).alias("_numeric_subjects"),
+        pl.col("_numeric_min").min().alias("_numeric_min"),
+        pl.col("_numeric_max").max().alias("_numeric_max"),
+        mean.alias("_numeric_mean"),
+        # Chan et al. pairwise merge avoids the cancellation of sum-of-squares.
+        (pl.col("_numeric_m2") + count * (pl.col("_numeric_mean") - mean) ** 2)
+        .sum()
+        .alias("_numeric_m2"),
+    ]
+
+
+def _sink_medians(
+    event_parts: dict[str, Path],
+    split_parts: dict[str, Path] | None,
+    keys: pl.LazyFrame,
+    count_keys: Sequence[str],
+    output: Path,
+) -> pl.LazyFrame:
+    # ponytail: exact medians are not additive across subject partitions, so
+    # this pass holds every released code's values; opt-in via numeric_stats.
+    events = pl.concat(
+        [
+            _partition_events(path, split_parts, validate_splits=False)
+            for _, path in sorted(event_parts.items())
+        ]
+    )
+    events.join(keys, on=list(count_keys), how="semi", nulls_equal=True).filter(
+        pl.col("numeric_value").is_finite()
+    ).group_by(list(count_keys)).agg(
+        pl.col("numeric_value").median().alias("numeric_median")
+    ).sink_parquet(output, maintain_order=False)
+    return pl.scan_parquet(output)
+
+
+def _numeric_statistics(
+    frame: pl.LazyFrame,
+    medians: pl.LazyFrame | None,
+    count_keys: Sequence[str],
+    config: SummaryConfig,
+) -> pl.LazyFrame:
+    if medians is not None:
+        frame = frame.join(medians, on=list(count_keys), how="left", nulls_equal=True)
+    count = pl.col("_numeric_count").cast(pl.Float64)
+    mean = pl.col("_numeric_mean")
+    std = pl.when(count > 1).then((pl.col("_numeric_m2") / (count - 1)).sqrt())
+    z = NormalDist().inv_cdf((1 + config.numeric_ci_level) / 2)
+    margin = z * std / count.sqrt()
+    values = {
+        "numeric_count": pl.col("_numeric_count"),
+        "numeric_min": pl.col("_numeric_min"),
+        "numeric_max": pl.col("_numeric_max"),
+        "numeric_mean": mean,
+        "numeric_median": pl.col("numeric_median"),
+        "numeric_std": std,
+        "numeric_ci_lower": mean - margin,
+        "numeric_ci_upper": mean + margin,
+    }
+    # Values from fewer than min_subjects people are suppressed like rare codes.
+    released = pl.col("_numeric_subjects") >= config.min_subjects
+    return frame.with_columns(
+        pl.when(released).then(values[name]).alias(name)
+        for name in _numeric_columns(config.numeric_stats)
+    ).drop(_NUMERIC_PARTIALS)
 
 
 def _mask_split_counts(

@@ -8,6 +8,9 @@ from typing import Any
 
 import yaml
 
+NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci")
+_NUMERIC_ALIASES = {"avg": "mean"}
+
 
 @dataclass(frozen=True)
 class EnrichmentConfig:
@@ -77,9 +80,18 @@ class SummaryConfig:
     rare_code_action: str = "bucket"
     rare_code_label: str = "__RARE__"
     round_counts_to: int | None = None
+    numeric_stats: tuple[str, ...] = ()
+    numeric_ci_level: float = 0.95
     enrichment: EnrichmentConfig | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "numeric_stats", _numeric_stats(self.numeric_stats))
+        if (
+            not isinstance(self.numeric_ci_level, (int, float))
+            or isinstance(self.numeric_ci_level, bool)
+            or not 0 < self.numeric_ci_level < 1
+        ):
+            raise ValueError("numeric_ci_level must be between 0 and 1")
         if self.enrichment is not None and not isinstance(
             self.enrichment, EnrichmentConfig
         ):
@@ -120,7 +132,13 @@ class SummaryConfig:
         summary = _mapping(raw.get("summary"), "summary")
         privacy = _mapping(raw.get("privacy"), "privacy")
         enrichment = _mapping(raw.get("enrichment"), "enrichment")
-        summary_options = {"per_split", "split_columns", "partitions"}
+        summary_options = {
+            "per_split",
+            "split_columns",
+            "partitions",
+            "numeric_stats",
+            "numeric_ci_level",
+        }
         privacy_options = {
             field.name
             for field in fields(cls)
@@ -170,6 +188,33 @@ class SummaryConfig:
         return replace(
             self, **{key: value for key, value in values.items() if value is not None}
         )
+
+
+def _numeric_stats(value: Any) -> tuple[str, ...]:
+    """Normalize ``true``/``false``/``None``, a comma string, or a sequence."""
+
+    if value is None or value is False:
+        return ()
+    if value is True:
+        return NUMERIC_STATS
+    if isinstance(value, str):
+        value = [item for item in value.split(",") if item.strip()]
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError("numeric_stats must be true, false, or a list of names")
+    names = [_NUMERIC_ALIASES.get(item.strip(), item.strip()) for item in value]
+    if names in (["all"], ["default"]):
+        return NUMERIC_STATS
+    if names == ["none"]:
+        return ()
+    unknown = set(names) - set(NUMERIC_STATS)
+    if unknown:
+        raise ValueError(
+            f"Unknown numeric_stats {sorted(unknown)}; choose from {list(NUMERIC_STATS)}"
+        )
+    # Canonical order keeps output columns stable regardless of input order.
+    return tuple(name for name in NUMERIC_STATS if name in names)
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:

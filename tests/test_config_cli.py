@@ -120,3 +120,37 @@ def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:
         SummaryConfig(rare_code_action="mask")
     with pytest.raises(ValueError, match="mutually exclusive"):
         SummaryConfig(per_split=True, split_columns=True)
+    with pytest.raises(ValueError, match="Unknown numeric_stats"):
+        SummaryConfig(numeric_stats=["mode"])
+    with pytest.raises(ValueError, match="numeric_ci_level"):
+        SummaryConfig(numeric_ci_level=95)
+
+
+def test_numeric_stats_config_and_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sumeds.config import NUMERIC_STATS
+
+    assert SummaryConfig().numeric_stats == ()
+    assert SummaryConfig(numeric_stats=True).numeric_stats == NUMERIC_STATS
+    assert SummaryConfig(numeric_stats="std, avg").numeric_stats == ("mean", "std")
+    path = tmp_path / "numeric.yaml"
+    path.write_text(
+        "summary:\n  numeric_stats: [median, max]\n  numeric_ci_level: 0.9\n"
+    )
+    config = SummaryConfig.from_yaml(path)
+    assert config.numeric_stats == ("max", "median")
+    assert config.numeric_ci_level == 0.9
+
+    captured = []
+    monkeypatch.setattr(
+        "sumeds.cli.summarize",
+        lambda root, output, config: captured.append(config) or output,
+    )
+    for flags, expected in (
+        (["--numeric-stats"], NUMERIC_STATS),
+        (["--numeric-stats", "min,ci"], ("min", "ci")),
+        (["-c", str(path), "--numeric-stats", "none"], ()),
+    ):
+        assert main([str(tmp_path), "-o", str(tmp_path / "o.parquet"), *flags]) == 0
+        assert captured[-1].numeric_stats == expected

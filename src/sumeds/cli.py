@@ -55,6 +55,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--round-counts-to", type=int, help="round released counts to this multiple"
     )
+    parser.add_argument(
+        "--numeric-stats",
+        nargs="?",
+        const="all",
+        metavar="STATS",
+        help="summarize numeric_value per code; optional comma list of "
+        "min,max,mean,median,std,ci (default: all) or 'none'",
+    )
+    parser.add_argument(
+        "--numeric-ci-level",
+        type=float,
+        help="confidence level for numeric_ci_* columns (default: 0.95)",
+    )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
         "--athena-csv", type=Path, help="enrich from an Athena CSV directory"
@@ -85,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             rare_code_action=args.rare_code_action,
             rare_code_label=args.rare_code_label,
             round_counts_to=args.round_counts_to,
+            numeric_stats=args.numeric_stats,
+            numeric_ci_level=args.numeric_ci_level,
             enrichment=_enrichment_from_args(args, config.enrichment),
         )
     except (OSError, ValueError) as exc:
