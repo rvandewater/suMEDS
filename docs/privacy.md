@@ -35,6 +35,13 @@ merely because its code label is hidden.
 whether a code is treated as rare. Rounding may make displayed counts differ
 from the threshold; `is_masked` remains authoritative.
 
+## Numeric statistics
+
+`numeric_stats` cells are suppressed unless at least `min_subjects` distinct
+subjects contribute a finite value. `numeric_min` and `numeric_max` are still
+individual measurements; omit them when a single person's extreme value is
+sensitive.
+
 ## Limitations
 
 This is threshold suppression, not differential privacy. It does not prevent:

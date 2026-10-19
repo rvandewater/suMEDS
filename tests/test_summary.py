@@ -226,3 +226,69 @@ def test_failure_preserves_existing_output(meds_dataset: Path, tmp_path: Path) -
     assert not list(tmp_path.glob(".*.tmp.parquet"))
     assert not list(tmp_path.glob(".*.counts.parquet"))
     assert not list(tmp_path.glob(".*.work"))
+
+
+def _add_numeric_values(root: Path) -> None:
+    # Only shard 0 gets the optional column; shard 1 must contribute nulls.
+    path = root / "data" / "0.parquet"
+    table = pq.read_table(path)
+    values = pa.array([1.0, 5.0, 3.0, float("nan")], type=pa.float32())
+    pq.write_table(table.append_column("numeric_value", values), path)
+
+
+def test_numeric_stats_are_exact_and_privacy_masked(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    _add_numeric_values(meds_dataset)
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=2, numeric_stats=True),
+    )
+    rows = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
+
+    a = rows["A"]
+    assert a["numeric_count"] == 2
+    assert (a["numeric_min"], a["numeric_max"]) == (1.0, 3.0)
+    assert a["numeric_mean"] == a["numeric_median"] == 2.0
+    assert a["numeric_std"] == pytest.approx(2**0.5)
+    margin = 1.959964 * 2**0.5 / 2**0.5
+    assert a["numeric_ci_lower"] == pytest.approx(2.0 - margin, abs=1e-5)
+    assert a["numeric_ci_upper"] == pytest.approx(2.0 + margin, abs=1e-5)
+    # B has one finite value (NaN is ignored), below min_subjects=2.
+    assert rows["B"]["subject_count"] == 2
+    assert rows["B"]["numeric_count"] is None
+    assert rows["B"]["numeric_mean"] is None
+
+
+def test_numeric_stats_selection_and_value_threshold(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    _add_numeric_values(meds_dataset)
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=3, numeric_stats=["avg", "min"]),
+    )
+    result = pl.read_parquet(output)
+
+    assert [name for name in result.columns if name.startswith("numeric_")] == [
+        "numeric_count",
+        "numeric_min",
+        "numeric_mean",
+    ]
+    # A is released (3 subjects) but only 2 subjects carry values.
+    row = result.filter(pl.col("code") == "A").row(0, named=True)
+    assert row["numeric_mean"] is None
+
+
+def test_numeric_stats_without_numeric_column(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=1, numeric_stats=True, per_split=True),
+    )
+    result = pl.read_parquet(output)
+    assert result["numeric_mean"].null_count() == result.height

@@ -95,12 +95,21 @@ def event_files(root: str | Path) -> list[Path]:
     return files
 
 
-def scan_events(root: str | Path, modifiers: Sequence[str] = ()) -> pl.LazyFrame:
-    """Validate shard footers and lazily project fields needed for counting."""
+def scan_events(
+    root: str | Path, modifiers: Sequence[str] = (), numeric: bool = False
+) -> pl.LazyFrame:
+    """Validate shard footers and lazily project fields needed for counting.
+
+    With ``numeric``, a Float64 ``numeric_value`` column is also projected;
+    shards without the optional MEDS column contribute nulls.
+    """
 
     files = event_files(root)
+    numeric_files = set()
     for path in files:
         schema = pq.read_schema(path)
+        if "numeric_value" in schema.names:
+            numeric_files.add(path)
         _validate_meds_schema(path, schema, meds.DataSchema)
         for column in modifiers:
             if column not in schema.names:
@@ -113,7 +122,22 @@ def scan_events(root: str | Path, modifiers: Sequence[str] = ()) -> pl.LazyFrame
             ):
                 raise ValueError(f"Code modifier '{column}' must be a string in {path}")
     columns = ["subject_id", "code", *modifiers]
-    return pl.scan_parquet([str(path) for path in files]).select(columns)
+    if not numeric:
+        return pl.scan_parquet([str(path) for path in files]).select(columns)
+    value = pl.col("numeric_value").cast(pl.Float64)
+    if len(numeric_files) == len(files):
+        return pl.scan_parquet([str(path) for path in files]).select(*columns, value)
+    return pl.concat(
+        [
+            pl.scan_parquet(str(path)).select(
+                *columns,
+                value
+                if path in numeric_files
+                else pl.lit(None, dtype=pl.Float64).alias("numeric_value"),
+            )
+            for path in files
+        ]
+    )
 
 
 def scan_code_metadata(root: str | Path) -> pl.LazyFrame:
