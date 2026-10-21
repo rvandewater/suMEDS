@@ -140,8 +140,9 @@ multiple after thresholding. Use `1` or `null` for exact counts.
 
 Set exactly one of `csv_dir` or `postgres` under `enrichment`. Omitting the
 section disables enrichment. Relative CSV directories are resolved relative to
-the YAML file. CLI `--athena-csv` or `--athena-postgres` overrides the complete
-YAML enrichment source.
+the YAML file, after expanding `~`. CLI `--athena-csv` or `--athena-postgres`
+replaces the YAML `csv_dir`/`postgres` source and keeps the YAML hierarchy
+options.
 
 `parent_codes` defaults to `true` and adds all ancestors through the root.
 `child_codes` and `sibling_codes` default to `false`. When children are enabled,

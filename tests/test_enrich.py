@@ -540,3 +540,17 @@ def test_enrichment_config_is_strict(tmp_path: Path) -> None:
         SummaryConfig.from_yaml(path)
     with pytest.raises(ValueError, match="parent_codes"):
         EnrichmentConfig(csv_dir=tmp_path, parent_codes="yes")  # type: ignore[arg-type]
+
+
+def test_self_parent_exclusion_skips_leading_null(athena_csv: Path) -> None:
+    frame = pl.LazyFrame(
+        {"code": ["LOCAL"], "parent_codes": [[None, "SNOMED/PARENT", "KEEP"]]}
+    )
+    row = (
+        enrich_metadata(frame, EnrichmentConfig(csv_dir=athena_csv))
+        .collect()
+        .row(0, named=True)
+    )
+
+    assert row["concept_id"] == 100
+    assert row["parent_codes"] == ["KEEP", "SNOMED//BRANCH", "SNOMED//ROOT"]

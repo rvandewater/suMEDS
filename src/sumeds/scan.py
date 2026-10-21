@@ -59,12 +59,17 @@ def dataset_root(path: str | Path) -> Path:
     return root
 
 
+def _meds_file(root: str | Path, relative: str, label: str) -> Path:
+    path = dataset_root(root) / relative
+    if not path.is_file():
+        raise FileNotFoundError(f"MEDS {label} not found: {path}")
+    return path
+
+
 def read_dataset_metadata(root: str | Path) -> dict[str, Any]:
     """Read and validate MEDS ``metadata/dataset.json``."""
 
-    path = dataset_root(root) / meds.dataset_metadata_filepath
-    if not path.is_file():
-        raise FileNotFoundError(f"MEDS dataset metadata not found: {path}")
+    path = _meds_file(root, meds.dataset_metadata_filepath, "dataset metadata")
     value = json.loads(path.read_text())
     meds.DatasetMetadataSchema.validate(value)
     return value
@@ -147,27 +152,21 @@ def scan_code_metadata(root: str | Path) -> pl.LazyFrame:
     always includes descriptions and parent-code relationships.
     """
 
-    path = dataset_root(root) / meds.code_metadata_filepath
-    if not path.is_file():
-        raise FileNotFoundError(f"MEDS code metadata not found: {path}")
+    path = _meds_file(root, meds.code_metadata_filepath, "code metadata")
     schema = pq.read_schema(path)
     _validate_meds_schema(path, schema, meds.CodeMetadataSchema)
-    frame = pl.scan_parquet(path)
-    names = set(frame.collect_schema().names())
-    missing = []
-    if "description" not in names:
-        missing.append(pl.lit(None, dtype=pl.String).alias("description"))
-    if "parent_codes" not in names:
-        missing.append(pl.lit(None, dtype=pl.List(pl.String)).alias("parent_codes"))
-    return frame.with_columns(missing) if missing else frame
+    optional = {"description": pl.String, "parent_codes": pl.List(pl.String)}
+    return pl.scan_parquet(path).with_columns(
+        pl.lit(None, dtype=dtype).alias(name)
+        for name, dtype in optional.items()
+        if name not in schema.names
+    )
 
 
 def scan_subject_splits(root: str | Path) -> pl.LazyFrame:
     """Validate and lazily scan canonical subject-to-split assignments."""
 
-    path = dataset_root(root) / meds.subject_splits_filepath
-    if not path.is_file():
-        raise FileNotFoundError(f"MEDS subject splits not found: {path}")
+    path = _meds_file(root, meds.subject_splits_filepath, "subject splits")
     schema = pq.read_schema(path)
     required = meds.SubjectSplitSchema.schema().names
     schema = pa.schema(
