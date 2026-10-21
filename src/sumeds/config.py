@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 
 NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci")
 _NUMERIC_ALIASES = {"avg": "mean"}
+_Config = TypeVar("_Config")
+
+
+def _with_overrides(self: _Config, **values: Any) -> _Config:
+    """Return a copy with non-``None`` CLI overrides applied."""
+
+    return replace(
+        self, **{key: value for key, value in values.items() if value is not None}
+    )
 
 
 @dataclass(frozen=True)
@@ -55,12 +64,7 @@ class EnrichmentConfig:
         ):
             raise ValueError("enrichment.child_depth must be an integer from 1 to 100")
 
-    def with_overrides(self, **values: Any) -> EnrichmentConfig:
-        """Return a copy with non-``None`` CLI overrides applied."""
-
-        return replace(
-            self, **{key: value for key, value in values.items() if value is not None}
-        )
+    with_overrides = _with_overrides
 
 
 @dataclass(frozen=True)
@@ -147,18 +151,7 @@ class SummaryConfig:
         unknown = (
             (set(summary) - summary_options)
             | (set(privacy) - privacy_options)
-            | (
-                set(enrichment)
-                - {
-                    "csv_dir",
-                    "postgres",
-                    "parent_codes",
-                    "child_codes",
-                    "sibling_codes",
-                    "exclude_self_parent_code",
-                    "child_depth",
-                }
-            )
+            | (set(enrichment) - {field.name for field in fields(EnrichmentConfig)})
         )
         if unknown:
             raise ValueError(
@@ -167,13 +160,9 @@ class SummaryConfig:
         enrichment_config = None
         if enrichment:
             csv_dir = enrichment.get("csv_dir")
-            if csv_dir is not None:
-                if not isinstance(csv_dir, (str, Path)):
-                    raise ValueError("enrichment.csv_dir must be a path")
-                path = Path(csv_dir)
-                enrichment["csv_dir"] = (
-                    path if path.is_absolute() else source.parent / path
-                )
+            # Invalid values are left for EnrichmentConfig to reject.
+            if isinstance(csv_dir, str) and csv_dir.strip():
+                enrichment["csv_dir"] = source.parent / Path(csv_dir).expanduser()
             enrichment_config = EnrichmentConfig(**enrichment)
         values: dict[str, Any] = {
             **summary,
@@ -182,12 +171,7 @@ class SummaryConfig:
         }
         return cls(**values)
 
-    def with_overrides(self, **values: Any) -> SummaryConfig:
-        """Return a copy with non-``None`` CLI overrides applied."""
-
-        return replace(
-            self, **{key: value for key, value in values.items() if value is not None}
-        )
+    with_overrides = _with_overrides
 
 
 def _numeric_stats(value: Any) -> tuple[str, ...]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Sequence
@@ -25,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         required=True,
-        help="output .parquet, .csv, or .json file",
+        help="output .parquet, .csv, .json, .jsonl, or .ndjson file",
     )
     parser.add_argument("-c", "--config", type=Path, help="YAML configuration file")
     parser.add_argument(
@@ -188,12 +189,11 @@ def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:
 def _enrichment_from_args(
     args: argparse.Namespace, current: EnrichmentConfig | None = None
 ) -> EnrichmentConfig | None:
-    if args.athena_csv is not None:
-        config = EnrichmentConfig(csv_dir=args.athena_csv)
-    elif args.athena_postgres is not None:
-        config = EnrichmentConfig(postgres=args.athena_postgres)
-    else:
-        config = current
+    config = current
+    if args.athena_csv is not None or args.athena_postgres is not None:
+        source = {"csv_dir": args.athena_csv, "postgres": args.athena_postgres}
+        # A CLI source replaces the YAML source but keeps its hierarchy options.
+        config = replace(current, **source) if current else EnrichmentConfig(**source)
     options = {
         "parent_codes": args.parent_codes,
         "child_codes": args.child_codes,

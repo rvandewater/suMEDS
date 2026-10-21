@@ -292,3 +292,17 @@ def test_numeric_stats_without_numeric_column(
     )
     result = pl.read_parquet(output)
     assert result["numeric_mean"].null_count() == result.height
+
+
+def test_rare_label_rejects_released_code_without_metadata(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    codes_path = meds_dataset / "metadata" / "codes.parquet"
+    pq.write_table(pq.read_table(codes_path).slice(1), codes_path)
+
+    with pytest.raises(ValueError, match="rare_code_label already exists"):
+        summarize(
+            meds_dataset,
+            tmp_path / "summary.parquet",
+            SummaryConfig(min_subjects=3, rare_code_label="A"),
+        )

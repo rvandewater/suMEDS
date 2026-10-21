@@ -154,3 +154,24 @@ def test_numeric_stats_config_and_cli(
     ):
         assert main([str(tmp_path), "-o", str(tmp_path / "o.parquet"), *flags]) == 0
         assert captured[-1].numeric_stats == expected
+
+
+def test_cli_source_keeps_yaml_hierarchy_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "enrich.yaml"
+    path.write_text("enrichment:\n  csv_dir: ~/athena\n  child_codes: true\n")
+    assert SummaryConfig.from_yaml(path).enrichment.csv_dir == (
+        Path("~/athena").expanduser()
+    )
+
+    captured = []
+    monkeypatch.setattr(
+        "sumeds.cli.summarize",
+        lambda root, output, config: captured.append(config) or output,
+    )
+    flags = ["-c", str(path), "--athena-postgres", "postgresql://example/omop"]
+    assert main([str(tmp_path), "-o", str(tmp_path / "o.parquet"), *flags]) == 0
+    assert captured[-1].enrichment == EnrichmentConfig(
+        postgres="postgresql://example/omop", child_codes=True
+    )
