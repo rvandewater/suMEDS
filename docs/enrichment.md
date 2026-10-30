@@ -161,10 +161,10 @@ filled only where null, and relationship lists are merged without duplicates.
 
 | Pack | Release | Codes | Source | License |
 |---|---|---:|---|---|
-| `ICD10CM` | `fy2016-fy2027` | 99,085 | CDC/NCHS order files, FY2016 to FY2027 (retired codes kept, with `first_year`/`last_year`) | public domain |
-| `ICD10PCS` | `fy2016-fy2027` | 197,789 | CMS order files and code tables, FY2016 to FY2027, including every 1- to 6-character prefix described from the tables' axis labels | public domain |
-| `ICD9CM` | `v32` | 17,541 | CMS v32 (final) plus NCHS FY2012 tabular headers | public domain |
-| `ICD9Proc` | `v32` | 4,648 | as ICD9CM | public domain |
+| `ICD10CM` | `fy2016-fy2027` | 99,085 | CDC/NCHS order files, FY2016 to FY2027 (retired codes kept, with `first_year`/`last_year`) | no license agreement; adapts WHO's ICD-10 |
+| `ICD10PCS` | `fy2016-fy2027` | 197,789 | CMS order files and code tables, FY2016 to FY2027, including every 1- to 6-character prefix described from the tables' axis labels | no license agreement; no WHO content |
+| `ICD9CM` | `v32` | 17,541 | CMS v32 (final) plus NCHS FY2012 tabular headers | no license agreement; adapts WHO's ICD-9 |
+| `ICD9Proc` | `v32` | 4,648 | as ICD9CM | no license agreement; adapts WHO's ICD-9 |
 | `LOINC` | `2.83` | 105,050 | LOINC Table Core 2.83, original fields unchanged, all statuses, `MapTo.csv` | LOINC license |
 
 Codes use the OMOP `concept_code` format (`I50.23`, `401.9`, `39.61`,
@@ -223,12 +223,18 @@ uv run suMEDS /data/MEDS -o summary.parquet --rules rules.yaml \
 
 ### Licenses and governance
 
-- Only vocabularies whose license allows redistribution are hosted:
-  ICD-10-CM, ICD-10-PCS, and ICD-9-CM are U.S. Government works in the public
-  domain; LOINC is redistributed under the LOINC license, with its full text
-  and the notice below in the pack folder and in every crosswalk folder.
-- Licensed vocabularies that may not be redistributed (SNOMED CT, CPT4, WHO
-  ICD-10, ICD-10-CN, ICD-O-3, ATC, and others) are never hosted. Validate them
+- Only vocabularies that may be redistributed are hosted. CDC/NCHS and CMS
+  publish ICD-10-CM, ICD-10-PCS, and ICD-9-CM at no cost and without a license
+  agreement. They are not public-domain works as a whole: ICD-10-CM and ICD-9-CM
+  are U.S. clinical modifications of WHO classifications, and WHO keeps the
+  copyright in content taken from them (each pack manifest's `license` field
+  says what the publisher states). LOINC is redistributed under the LOINC
+  license, with its full text and the notice below in the pack folder and in
+  every crosswalk folder; `MapTo.csv` keeps only rows whose codes are in the
+  pack.
+- Vocabularies that may not be redistributed or whose terms are unknown (SNOMED
+  CT, CPT4, WHO ICD-10 itself, ICD-10-CN, ICD-O-3, ATC, and others) are never
+  hosted. Validate them
   against your own Athena download (`validate: athena`) or tag them
   (`validate: none`).
 - suMEDS is the single maintained copy of LOINC content for the MEDS ETLs. Its

@@ -2,8 +2,8 @@
 
 A ``sumeds-rules/0.1`` YAML file maps dataset codes to external vocabulary codes
 (``ontology`` rules by regex, ``crosswalk`` rules through a hosted table) and adds
-parent codes that exist in the same table (``hierarchy`` rules). Public-domain
-vocabularies are validated against sharded ontology packs; packs and crosswalk
+parent codes that exist in the same table (``hierarchy`` rules). Vocabularies
+that may be redistributed are validated against sharded ontology packs; packs and crosswalk
 tables are fetched on demand from the separately versioned data repository
 ``rvandewater/sumeds-ontologies`` at a pinned release tag (or a mirror or local
 copy), verified against the sha256 checksums of their manifest, and cached.
@@ -42,7 +42,7 @@ DEFAULT_SOURCE = (
 # manifest every shard, so this digest pins all default content: a moved tag
 # fails loudly instead of silently changing enrichment results.
 DEFAULT_INDEX_SHA256 = (
-    "e183404eee8e315efba271f56abdd187d048014ce4678f5fc2393007a370d084"
+    "d264e222ae07473fc0f60cbcea059e385e3ef61a2567060f19be4b26d139d695"
 )
 _RELEASE_REF = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$|^[0-9a-f]{40}$")
 SOURCE_ENV = "SUMEDS_ONTOLOGY_SOURCE"
