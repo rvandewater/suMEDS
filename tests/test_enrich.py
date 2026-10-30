@@ -163,16 +163,56 @@ def test_csv_enrichment_resolves_common_and_versioned_codes(
     lab = rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
     assert lab["description"] == "Existing lab name"
-    assert lab["parent_codes"] is None
+    # Enrichment is non-destructive by default: the lookup reference stays verbatim.
+    assert lab["parent_codes"] == ["LOINC/5803-2"]
     assert rows["malformed"]["parent_codes"] is None
 
-    retained = enrich_metadata(
+    excluded = enrich_metadata(
         frame,
-        EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=False),
+        EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=True),
     ).collect()
-    assert retained.filter(pl.col("code") == "LAB//51491//units").to_dicts()[0][
-        "parent_codes"
-    ] == ["LOINC//5803-2"]
+    assert (
+        excluded.filter(pl.col("code") == "LAB//51491//units").to_dicts()[0][
+            "parent_codes"
+        ]
+        is None
+    )
+
+
+def test_enrichment_never_removes_or_rewrites_existing_metadata(
+    athena_csv: Path,
+) -> None:
+    existing = {
+        "LAB//51491//units": ["LOINC/5803-2", "KEEP", "KEEP"],
+        "ICD10CM//2024//A01": ["EXISTING", "SNOMED/BRANCH"],
+        "not-in-athena": ["KEEP"],
+    }
+    frame = pl.DataFrame(
+        {
+            "code": list(existing),
+            "description": ["Mine", None, "Also mine"],
+            "parent_codes": list(existing.values()),
+        }
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena_csv))
+        .collect()
+        .to_dicts()
+    }
+    for code, parents in existing.items():
+        merged = rows[code]["parent_codes"]
+        assert merged[: len(parents)] == parents
+        added = merged[len(parents) :]
+        spelled = {
+            parent.replace("/", "//") for parent in parents if parent.count("/") == 1
+        }
+        assert not set(added) & (set(parents) | spelled)
+        assert len(added) == len(set(added))
+    assert rows["LAB//51491//units"]["description"] == "Mine"
+    assert rows["not-in-athena"]["description"] == "Also mine"
+    assert rows["ICD10CM//2024//A01"]["description"] is not None
+    assert "SNOMED//BRANCH" not in rows["ICD10CM//2024//A01"]["parent_codes"]
 
 
 def test_unmatched_relationship_arrays_pass_through(athena_csv: Path) -> None:
@@ -408,7 +448,7 @@ def test_standalone_handles_csv_and_null_columns(
     assert cms["parent_codes"] == "SNOMED//BRANCH|SNOMED//PARENT|SNOMED//ROOT"
     lab = csv_rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
-    assert lab["parent_codes"] is None
+    assert lab["parent_codes"] == "LOINC/5803-2"
 
     enrich_file(csv_input, parquet_output, EnrichmentConfig(csv_dir=athena_csv))
     assert pl.read_parquet(parquet_output).schema["concept_id"] == pl.Int64
@@ -547,7 +587,10 @@ def test_self_parent_exclusion_skips_leading_null(athena_csv: Path) -> None:
         {"code": ["LOCAL"], "parent_codes": [[None, "SNOMED/PARENT", "KEEP"]]}
     )
     row = (
-        enrich_metadata(frame, EnrichmentConfig(csv_dir=athena_csv))
+        enrich_metadata(
+            frame,
+            EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=True),
+        )
         .collect()
         .row(0, named=True)
     )

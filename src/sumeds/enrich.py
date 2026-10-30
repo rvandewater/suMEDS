@@ -111,15 +111,9 @@ def _enrich(
             existing = pl.col(name)
             if schema[name] == pl.String:
                 existing = existing.str.split("|")
-            empty = pl.lit([], dtype=dtype)
             existing = existing.cast(dtype, strict=False)
             present = existing.is_not_null() | incoming.is_not_null()
             if name == "parent_codes":
-                existing = existing.list.eval(
-                    pl.when(pl.element().str.count_matches("/") == 1)
-                    .then(pl.element().str.replace("/", "//", literal=True))
-                    .otherwise(pl.element())
-                )
                 if config.exclude_self_parent_code:
                     # Drop the reference _code_candidates matched: first non-null.
                     remaining = existing.list.drop_nulls().list.slice(1)
@@ -132,10 +126,7 @@ def _enrich(
                     existing = (
                         pl.when(matched_by_parent).then(remaining).otherwise(existing)
                     )
-            merged = pl.concat_list(
-                pl.coalesce(existing, empty),
-                pl.coalesce(incoming, empty),
-            ).list.unique(maintain_order=True)
+            merged = _append_new(existing, incoming, dtype, name == "parent_codes")
             expressions.append(
                 pl.when(present).then(merged).otherwise(None).alias(name)
             )
@@ -148,6 +139,42 @@ def _enrich(
                 )
             )
     return joined.with_columns(expressions).drop(*sorted(_INTERNAL))
+
+
+def _append_new(
+    existing: pl.Expr, incoming: pl.Expr, dtype: pl.DataType, references: bool
+) -> pl.Expr:
+    """Keep ``existing`` verbatim and append the ``incoming`` entries it lacks.
+
+    Enrichment never removes, reorders, or rewrites existing entries. For parent
+    references, ``VOCABULARY/CODE`` and ``VOCABULARY//CODE`` count as the same
+    entry when deciding what is new, but the existing spelling is kept.
+    """
+
+    def key(element: pl.Expr) -> pl.Expr:
+        if not references:
+            return element
+        return (
+            pl.when(element.str.count_matches("/") == 1)
+            .then(element.str.replace("/", "//", literal=True))
+            .otherwise(element)
+        )
+
+    def tagged(values: pl.Expr, is_existing: bool) -> pl.Expr:
+        return pl.coalesce(values, pl.lit([], dtype=dtype)).list.eval(
+            pl.struct(
+                value=pl.element(),
+                key=key(pl.element()),
+                existing=pl.lit(is_existing),
+            )
+        )
+
+    entry = pl.element().struct
+    return pl.concat_list(tagged(existing, True), tagged(incoming, False)).list.eval(
+        pl.element()
+        .filter(entry.field("existing") | entry.field("key").is_first_distinct())
+        .struct.field("value")
+    )
 
 
 def enrich_file(

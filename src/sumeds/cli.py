@@ -197,7 +197,8 @@ def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:
         "--exclude-self-parent-code",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="remove an existing parent reference used as the Athena lookup (default: enabled)",
+        help="remove an existing parent reference used as the Athena lookup; this is the only "
+        "enrichment option that deletes existing metadata (default: disabled)",
     )
     parser.add_argument(
         "--child-depth",

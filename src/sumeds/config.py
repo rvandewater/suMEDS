@@ -38,7 +38,7 @@ class EnrichmentConfig:
     child_codes: bool = False
     sibling_codes: bool = False
     child_depth: int = 3
-    exclude_self_parent_code: bool = True
+    exclude_self_parent_code: bool = False
     rules: OntologyRules | None = None
     ontology_source: str | None = None
     ontology_ref: str = DEFAULT_REF

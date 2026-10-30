@@ -29,11 +29,14 @@ For each valid Athena match, suMEDS adds or fills:
 | `domain_id` | string | OMOP domain |
 | `standard_concept` | string | `S`, `C`, or null |
 
-Existing relationship lists are merged without duplicates. Parent references
-using `VOCABULARY/CONCEPT_CODE` are normalized to
-`VOCABULARY//CONCEPT_CODE`. By default, a parent reference used to resolve the
-matched concept itself is removed; retain it with
-`--no-exclude-self-parent-code` or `exclude_self_parent_code: false`. Newly
+Enrichment is non-destructive. Existing descriptions and other scalar values
+are never overwritten, and existing relationship lists are kept verbatim, in
+order, with new entries appended after them. An entry is only appended when
+the list does not already contain it; for parent references,
+`VOCABULARY/CONCEPT_CODE` and `VOCABULARY//CONCEPT_CODE` count as the same
+entry, and the existing spelling is kept. The one opt-in exception is
+`--exclude-self-parent-code` (`exclude_self_parent_code: true`), which removes
+the existing parent reference used to resolve the matched concept itself. Newly
 added codes must resolve to a valid row in the same Athena `CONCEPT` source.
 Invalid, missing, self-referential, and cyclic hierarchy rows are ignored.
 Unmatched concepts pass through unchanged.

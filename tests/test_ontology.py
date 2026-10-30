@@ -415,7 +415,9 @@ def test_pack_rule_fills_description_and_ancestors(packs: Path) -> None:
     assert heart["concept_id"] is None
     kept = rows["DIAGNOSIS//ICD//10//A047"]
     assert kept["description"] == "Keep me"
-    assert kept["parent_codes"] == ["ICD10CM//A04.7", "LOCAL", "ICD10CM//A04"]
+    # Existing entries keep their spelling; the rule's own reference is not
+    # repeated because ICD10CM/A04.7 already names it.
+    assert kept["parent_codes"] == ["ICD10CM/A04.7", "LOCAL", "ICD10CM//A04"]
     unknown = rows["DIAGNOSIS//ICD//10//Z999"]
     assert unknown["description"] is None and unknown["parent_codes"] is None
     pcs = rows["ICD10_PCS//0DTJ4"]
@@ -710,9 +712,18 @@ def test_parent_reference_rank_still_excludes_self(
     frame = pl.DataFrame(
         {"code": ["SOMETHING"], "parent_codes": [[None, "LOCAL/X1", "KEEP"]]}
     )
-    rows = _enrich(frame, packs, ICD_RULES, csv_dir=athena_icd)
+    rows = _enrich(
+        frame, packs, ICD_RULES, csv_dir=athena_icd, exclude_self_parent_code=True
+    )
     assert rows["SOMETHING"]["concept_id"] == 3
     assert rows["SOMETHING"]["parent_codes"] == ["KEEP", "LOCAL//X2"]
+    retained = _enrich(frame, packs, ICD_RULES, csv_dir=athena_icd)
+    assert retained["SOMETHING"]["parent_codes"] == [
+        None,
+        "LOCAL/X1",
+        "KEEP",
+        "LOCAL//X2",
+    ]
 
 
 class _FakeRemote:

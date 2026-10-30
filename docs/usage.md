@@ -44,7 +44,7 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--parent-codes`, `--no-parent-codes` | Enable/disable all-ancestor expansion (enabled by default) |
 | `--child-codes`, `--no-child-codes` | Enable/disable descendant expansion (disabled by default) |
 | `--sibling-codes`, `--no-sibling-codes` | Enable/disable children-of-ancestors expansion (disabled by default) |
-| `--exclude-self-parent-code`, `--no-exclude-self-parent-code` | Exclude/retain a lookup parent reference in `parent_codes` (enabled by default) |
+| `--exclude-self-parent-code`, `--no-exclude-self-parent-code` | Remove/retain the existing parent reference used as the lookup (retained by default; removing is the only option that deletes existing metadata) |
 | `--child-depth N` | Maximum descendant depth (default `3`, range `1`–`100`) |
 | `--rules PATH` | `sumeds-rules/0.1` file: ontology, crosswalk and same-table hierarchy rules |
 | `--ontology-source URL_OR_DIR` | Pack repository URL, `file://` URL, or directory (default `$SUMEDS_ONTOLOGY_SOURCE`, else GitHub) |
