@@ -536,6 +536,9 @@ def _rule_enrichment(
         matched = athena.get(code)
         athena_rank = None if matched is None else matched[_MATCH_RANK]
         choice = None
+        # A tag (validate: none) is a fallback: any later candidate that validates,
+        # through a pack or Athena, wins over it.
+        tag = None
         for index, values in hits.get(code, ()):
             if athena_rank is not None and athena_rank <= index:
                 break
@@ -547,9 +550,10 @@ def _rule_enrichment(
                 if found:
                     choice = (index, (found[0],))
                     break
-            elif rule.validate == "none":
-                choice = (index, values)
-                break
+            elif rule.validate == "none" and tag is None:
+                tag = (index, values)
+        if choice is None and matched is None:
+            choice = tag
         if choice is None and matched is not None:
             record = {name: matched[f"_athena_{name}"] for name in _FIELDS}
             record[_MATCH_RANK] = athena_rank

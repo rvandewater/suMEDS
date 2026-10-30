@@ -771,6 +771,34 @@ def test_remote_fetches_only_needed_shards_and_caches(
     assert local.lookup("ICD10CM", ["A04.72"])["A04.72"].ancestors == ("A04.7", "A04")
 
 
+def test_a_tag_is_only_a_fallback_for_a_later_validated_rule(packs: Path) -> None:
+    rules = {
+        "schema": "sumeds-rules/0.1",
+        "ontology": [
+            {
+                "id": "tag-first",
+                "pattern": "^DX//(?P<code>.+)$",
+                "vocabulary": "ICD10CM",
+                "normalize": [{"pattern": "^(.+)$", "replace": "TAG-\\1"}],
+                "validate": "none",
+            },
+            {
+                "id": "pack-second",
+                "pattern": "^DX//(?P<code>...)(?P<rest>.*)$",
+                "vocabulary": "ICD10CM",
+                "normalize": [{"pattern": "^(.+)$", "replace": "\\1"}],
+            },
+        ],
+    }
+    rows = _enrich(pl.DataFrame({"code": ["DX//I50", "DX//ZZZ"]}), packs, rules)
+    # I50 is in the pack, so the second rule's validated code wins over the tag.
+    assert rows["DX//I50"]["concept_code"] == "I50"
+    assert rows["DX//I50"]["parent_codes"] == ["ICD10CM//I50"]
+    # ZZZ validates nowhere, so the first rule's tag is used.
+    assert rows["DX//ZZZ"]["parent_codes"] == ["ICD10CM//TAG-ZZZ"]
+    assert rows["DX//ZZZ"]["concept_code"] is None
+
+
 def test_a_code_is_never_its_own_parent(packs: Path) -> None:
     rules = {
         "schema": "sumeds-rules/0.1",

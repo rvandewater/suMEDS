@@ -115,6 +115,9 @@ wins. `validate` decides what may validate it:
 | `athena` | Athena only | rule skipped (reported) |
 | `none` | Athena first; else tag only | tag only |
 
+A tag is a fallback: when a later rule, or a built-in layout below, validates
+the same code through a pack or Athena, that validated code wins over the tag.
+
 A validated code gets `description` (only where null), `vocabulary_id` and
 `concept_code` (and the Athena-only fields when Athena validated it), and
 `parent_codes` = the vocabulary code itself followed by its ancestors through
