@@ -771,6 +771,30 @@ def test_remote_fetches_only_needed_shards_and_caches(
     assert local.lookup("ICD10CM", ["A04.72"])["A04.72"].ancestors == ("A04.7", "A04")
 
 
+def test_a_code_is_never_its_own_parent(packs: Path) -> None:
+    rules = {
+        "schema": "sumeds-rules/0.1",
+        "ontology": [
+            {
+                "id": "double",
+                "pattern": "^ICD10CM//(?P<code>.+)$",
+                "vocabulary": "ICD10CM",
+            },
+            {
+                "id": "single",
+                "pattern": "^ICD10CM/(?P<code>[^/].*)$",
+                "vocabulary": "ICD10CM",
+            },
+        ],
+    }
+    frame = pl.DataFrame({"code": ["ICD10CM//I50.23", "ICD10CM/I50.23"]})
+    rows = _enrich(frame, packs, rules)
+    for code in frame["code"]:
+        assert rows[code]["concept_code"] == "I50.23"
+        assert rows[code]["description"] is not None
+        assert rows[code]["parent_codes"] == ["ICD10CM//I50.2", "ICD10CM//I50"]
+
+
 def test_default_source_is_a_pinned_release(
     packs: Path, monkeypatch: pytest.MonkeyPatch, isolated_cache: Path
 ) -> None:

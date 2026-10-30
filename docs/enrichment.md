@@ -126,6 +126,9 @@ for non-standard vocabularies such as ICD-10-CM. A tag (`validate: none`) adds
 only the vocabulary code to `parent_codes`, with no description. A `pack` rule
 for a vocabulary without a pack fails with the list of available packs; codes
 missing from the pack or from Athena get nothing, so no dangling code is added.
+A code is never its own parent, child or sibling: when a dataset code already
+is a vocabulary reference (OMOP-style `ICD10PCS//0DTJ4ZZ` or
+`ICD10PCS/0DTJ4ZZ`), its rule's vocabulary code is not added as its parent.
 If a crosswalk key maps to several codes, Athena keeps the lowest concept id,
 a pack the first code in sort order, and a tag lists them all.
 

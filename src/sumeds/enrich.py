@@ -141,6 +141,12 @@ def _enrich(
     return joined.with_columns(expressions).drop(*sorted(_INTERNAL))
 
 
+def _reference_key(value: str) -> str:
+    """``VOCABULARY/CODE`` and ``VOCABULARY//CODE`` name the same entry."""
+
+    return value.replace("/", "//", 1) if value.count("/") == 1 else value
+
+
 def _append_new(
     existing: pl.Expr, incoming: pl.Expr, dtype: pl.DataType, references: bool
 ) -> pl.Expr:
@@ -628,8 +634,14 @@ def _rule_enrichment(
     for code, record in records.items():
         columns["code"].append(code)
         columns[_MATCH_RANK].append(record[_MATCH_RANK])
+        own = _reference_key(code)
         for name in _FIELDS:
             value = record[name]
+            if name in _RELATIONSHIPS and value:
+                # A code is never its own parent, child or sibling. Codes that already are
+                # vocabulary references (OMOP-style ICD10PCS//0DTJ4ZZ or ICD10PCS/0DTJ4ZZ)
+                # would otherwise list their own rule reference.
+                value = [item for item in value if _reference_key(item) != own]
             if name in _RELATIONSHIPS and not value:
                 value = None
             columns[f"_athena_{name}"].append(value)
