@@ -40,6 +40,23 @@ git push origin main "$VERSION"
 The tag workflow rejects mismatched versions, then publishes the distributions
 to PyPI and creates the GitHub release.
 
+## Ontology data releases
+
+The ontology packs and crosswalk tables are versioned separately in
+[`rvandewater/sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies).
+Each suMEDS release pins one of its release tags. To move to a new data
+release, update both constants in `src/sumeds/ontology.py` and note the change
+in the release notes:
+
+```bash
+REF=v0.2.0   # the new sumeds-ontologies tag
+curl -fsSL "https://raw.githubusercontent.com/rvandewater/sumeds-ontologies/$REF/ontologies/index.json" | shasum -a 256
+# set DEFAULT_REF = "$REF" and DEFAULT_INDEX_SHA256 to the printed digest
+uv run pytest
+```
+
+Never move a published data tag: suMEDS would refuse the changed index.
+
 ## Test data
 
 Unit tests create a tiny MEDS dataset with two shards, code modifiers, subject

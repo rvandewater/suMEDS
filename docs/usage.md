@@ -46,6 +46,11 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--sibling-codes`, `--no-sibling-codes` | Enable/disable children-of-ancestors expansion (disabled by default) |
 | `--exclude-self-parent-code`, `--no-exclude-self-parent-code` | Exclude/retain a lookup parent reference in `parent_codes` (enabled by default) |
 | `--child-depth N` | Maximum descendant depth (default `3`, range `1`–`100`) |
+| `--rules PATH` | `sumeds-rules/0.1` file: ontology, crosswalk and same-table hierarchy rules |
+| `--ontology-source URL_OR_DIR` | Pack repository URL, `file://` URL, or directory (default `$SUMEDS_ONTOLOGY_SOURCE`, else GitHub) |
+| `--ontology-ref REF` | Release tag of the default pack repository, `sumeds-ontologies` (default: the pinned `v0.1.0`; other refs warn) |
+| `--offline`, `--no-offline` | Use only cached or local packs (disabled by default) |
+| `--verbose` | Print the enrichment coverage and rule report |
 | `--version` | Print the installed version |
 
 CLI options override YAML values. A successful run replaces the target
@@ -90,9 +95,12 @@ uv run suMEDS /data/MEDS -o summary-wide-private.parquet \
 
 The two split-output modes are mutually exclusive.
 
-Optional Athena enrichment accepts exactly one local or PostgreSQL source. Use
-`suMEDS-enrich INPUT -o OUTPUT` to enrich an existing metadata or summary table
-without running a summary. See [Athena enrichment](enrichment.md).
+Optional enrichment accepts at most one local or PostgreSQL Athena source
+and/or a `--rules` file validated against the public ontology packs. Use
+`suMEDS-enrich INPUT -o OUTPUT` (the same source, hierarchy, and ontology
+flags; `--no-verbose` hides its report) to enrich an existing metadata or
+summary table without running a summary. See
+[Metadata enrichment](enrichment.md).
 
 ## Output formats
 
@@ -113,13 +121,13 @@ Parquet when exact nested types matter.
 | `split` | string | Present only for per-split output |
 | `code` | string | MEDS code or the configured rare sentinel |
 | `description` | string, nullable | Canonical description; null for masked rows |
-| `parent_codes` | list[string], nullable | Existing values plus valid Athena ancestors through root by default |
-| `child_codes` | list[string], nullable | Existing values plus optional Athena descendants |
-| `sibling_codes` | list[string], nullable | Existing values plus optional children of Athena ancestors |
+| `parent_codes` | list[string], nullable | Existing values plus valid Athena or pack ancestors through root by default, then same-table parents from hierarchy rules |
+| `child_codes` | list[string], nullable | Existing values plus optional Athena or pack descendants |
+| `sibling_codes` | list[string], nullable | Existing values plus optional children of Athena or pack ancestors |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
-| `vocabulary_id` | string, nullable | Matched Athena vocabulary when enrichment is enabled |
+| `vocabulary_id` | string, nullable | Matched Athena or pack vocabulary when enrichment is enabled |
 | `concept_id` | int64, nullable | Numeric OMOP concept identifier |
-| `concept_code` | string, nullable | Vocabulary-local Athena code |
+| `concept_code` | string, nullable | Vocabulary-local code (Athena or pack) |
 | `domain_id` | string, nullable | OMOP domain |
 | `standard_concept` | string, nullable | OMOP standard-concept marker |
 | `event_count` | uint64 | Event rows in the release cell |

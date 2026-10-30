@@ -12,8 +12,8 @@ from uuid import uuid4
 import polars as pl
 
 from .config import SummaryConfig
-from .enrich import enrich_metadata
-from .io import output_format, sink_table
+from .enrich import _coverage, _enrich, _print_enrichment_report
+from .io import output_format, scan_table, sink_table
 from .scan import (
     code_modifier_columns,
     dataset_root,
@@ -182,12 +182,15 @@ def summarize(
     root: str | Path,
     output: str | Path,
     config: SummaryConfig | None = None,
+    *,
+    verbose: bool = False,
 ) -> Path:
     """Write a privacy-aware MEDS code catalog and return its path.
 
     Projected event rows are partitioned by subject on disk so exact distinct
     counts remain additive with bounded aggregation state. Bucket mode reuses
     those partitions to count the exact subject union across rare codes.
+    ``verbose=True`` prints the enrichment coverage and rule report.
     """
 
     config = config or SummaryConfig()
@@ -231,6 +234,8 @@ def summarize(
     counts_path = output.with_name(f".{output.name}.{token}.counts.parquet")
     staged_path = output.with_name(f".{output.name}.{token}.tmp{output.suffix}")
     work_path = output.with_name(f".{output.name}.{token}.work")
+    report = None
+    stats: dict = {}
 
     try:
         event_parts = _partition_by_subject(
@@ -336,14 +341,19 @@ def summarize(
             [*scope, "code", *modifiers]
         )
         if config.enrichment is not None:
-            result = enrich_metadata(result, config.enrichment)
+            unenriched = result
+            result = _enrich(result, config.enrichment, stats)
         sink_table(result, staged_path, format_)
         staged_path.replace(output)
+        if verbose and config.enrichment is not None:
+            report = _coverage(unenriched), _coverage(scan_table(output))
     finally:
         counts_path.unlink(missing_ok=True)
         staged_path.unlink(missing_ok=True)
         shutil.rmtree(work_path, ignore_errors=True)
 
+    if report is not None:
+        _print_enrichment_report(report, stats)
     return output
 
 

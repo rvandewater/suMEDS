@@ -98,7 +98,55 @@ before/after metadata coverage.
 
 Both `VOCABULARY//CODE//...` and
 `VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved. See the
-[Athena enrichment guide](docs/enrichment.md).
+[enrichment guide](docs/enrichment.md).
+
+### Rules and public ontology packs
+
+Without Athena, or in addition to it, a `sumeds-rules/0.1` file maps dataset
+codes to vocabulary codes and adds parents that exist in the same table:
+
+```yaml
+schema: sumeds-rules/0.1
+ontology:
+  - id: icd10cm-diagnoses
+    pattern: '^DIAGNOSIS//ICD//10//(?P<code>[A-Z][0-9][0-9A-Z][0-9A-Z]{0,4})$'
+    vocabulary: ICD10CM
+    normalize: [{pattern: '^(...)(.+)$', replace: '\1.\2'}]
+    validate: pack            # pack | athena | none
+crosswalk:
+  - id: nwicu-lab-loinc
+    pattern: '^LAB//(?P<key>[0-9]+)//'
+    table: nwicu/loinc_parents
+    key_column: itemid
+    code_column: loinc_code
+    vocabulary: LOINC
+hierarchy:
+  - {id: eicu-diagnosis-paths, pattern: '^(?P<prefix>DIAGNOSIS//)(?P<path>.+)$', group: path, separator: '|'}
+  - {id: icd-prefix, pattern: '^(?P<p>DIAGNOSIS//ICD10_CN//)(?P<code>.+)$', group: code, mode: prefix, ignore: '.'}
+  - {id: ontology-parents-in-dataset, from_ontology: true}
+```
+
+```bash
+uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet --rules rules.yaml
+```
+
+Codes are validated against ontology packs kept in a separately versioned
+data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard
+on demand from a pinned release tag (default `v0.1.0`, with the sha256 of its
+index pinned in suMEDS), verifies every file, and caches it; `--offline` and
+`--ontology-source` (a mirror, or packs you rebuilt yourself from the official
+sources) are supported. Release `v0.1.0` holds ICD-10-CM and ICD-10-PCS (FY2016
+to FY2027), ICD-9-CM and ICD-9 procedures (v32), all public domain, and LOINC
+2.83 under the [LOINC license](https://github.com/rvandewater/sumeds-ontologies/blob/v0.1.0/ontologies/LOINC/2.83/LoincLicense_5.8.txt).
+Dataset crosswalk tables (for example lab item ids to LOINC) live there as well.
+Licensed vocabularies that may not be redistributed (SNOMED CT, CPT4, WHO
+ICD-10, ATC, ...) are validated only through your own Athena download.
+
+This material contains content from LOINC (http://loinc.org). LOINC is
+copyright © Regenstrief Institute, Inc. and the Logical Observation
+Identifiers Names and Codes (LOINC) Committee and is available at no cost under
+the license at http://loinc.org/license. LOINC® is a registered United States
+trademark of Regenstrief Institute, Inc.
 
 ## Python API
 

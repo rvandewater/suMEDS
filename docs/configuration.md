@@ -18,7 +18,7 @@ privacy:
   rare_code_label: __RARE__
   round_counts_to: null
 
-# Optional; set exactly one source.
+# Optional; set at most one Athena source, and/or a rules file.
 enrichment:
   csv_dir: /vocabularies/athena
   # postgres: postgresql://postgres@localhost/omop
@@ -26,6 +26,10 @@ enrichment:
   child_codes: false
   sibling_codes: false
   child_depth: 3
+  # rules: rules.yaml            # sumeds-rules/0.1, relative to this file
+  # ontology_source: null        # URL or directory; default: sumeds-ontologies
+  # ontology_ref: v0.1.0         # release tag of sumeds-ontologies
+  # offline: false
 ```
 
 ## Summary options
@@ -138,8 +142,10 @@ multiple after thresholding. Use `1` or `null` for exact counts.
 
 ## Enrichment options
 
-Set exactly one of `csv_dir` or `postgres` under `enrichment`. Omitting the
-section disables enrichment. Relative CSV directories are resolved relative to
+Set at most one of `csv_dir` or `postgres` under `enrichment`, and/or `rules`
+(a `sumeds-rules/0.1` file). With `rules` and no Athena source, rules are
+validated against the public ontology packs only. Omitting the section
+disables enrichment. Relative CSV directories are resolved relative to
 the YAML file, after expanding `~`. CLI `--athena-csv` or `--athena-postgres`
 replaces the YAML `csv_dir`/`postgres` source and keeps the YAML hierarchy
 options.
@@ -151,7 +157,18 @@ options.
 reference used to match the Athena concept itself. CLI equivalents are
 `--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
 `--[no-]exclude-self-parent-code`, and `--child-depth`. See
-[Athena enrichment](enrichment.md) for hierarchy semantics and output fields.
+[Metadata enrichment](enrichment.md) for hierarchy semantics and output fields.
+
+`rules` (CLI `--rules`) is resolved relative to the YAML file.
+`ontology_source` (CLI `--ontology-source`; default: the
+`SUMEDS_ONTOLOGY_SOURCE` environment variable, else the
+`rvandewater/sumeds-ontologies` GitHub repository) is an `http(s)://` or
+`file://` URL or a directory (relative paths are resolved against the YAML
+file). `ontology_ref` (CLI `--ontology-ref`, default: the pinned release tag,
+`v0.1.0`) selects the release of the default GitHub source; a ref that is not
+a release tag or full commit sha prints a warning. `offline`
+(CLI `--[no-]offline`, default `false`) uses only cached or local packs. See
+[Rules and ontology packs](enrichment.md#rules-and-ontology-packs).
 
 ## Precedence
 

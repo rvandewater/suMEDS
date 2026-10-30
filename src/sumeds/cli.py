@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--athena-postgres", help="enrich from PostgreSQL using this psql conninfo"
     )
     _add_hierarchy_arguments(parser)
+    _add_ontology_arguments(parser)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print the enrichment coverage and rule report",
+    )
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -107,7 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
 
     try:
-        output = summarize(args.dataset_root, args.output, config)
+        # Only pass verbose when requested, keeping the 3-argument call stable.
+        options = {"verbose": True} if args.verbose else {}
+        output = summarize(args.dataset_root, args.output, config, **options)
     except Exception as exc:  # CLI boundary: library callers retain typed exceptions.
         parser.exit(1, f"suMEDS: error: {exc}\n")
 
@@ -120,18 +128,26 @@ def build_enrich_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="suMEDS-enrich",
-        description="Enrich MEDS metadata or a suMEDS summary from OHDSI Athena.",
+        description="Enrich MEDS metadata or a suMEDS summary from OHDSI Athena "
+        "and/or rules over public ontology packs.",
     )
     parser.add_argument("input", type=Path, help="metadata or summary table")
     parser.add_argument(
         "-o", "--output", type=Path, required=True, help="enriched output table"
     )
-    sources = parser.add_mutually_exclusive_group(required=True)
+    sources = parser.add_mutually_exclusive_group()
     sources.add_argument("--athena-csv", type=Path, help="Athena CSV directory")
     sources.add_argument(
         "--athena-postgres", help="PostgreSQL connection string or conninfo"
     )
     _add_hierarchy_arguments(parser)
+    _add_ontology_arguments(parser)
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="print the coverage and rule report (default: enabled)",
+    )
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -141,12 +157,16 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
 
     parser = build_enrich_parser()
     args = parser.parse_args(argv)
+    if args.athena_csv is None and args.athena_postgres is None and args.rules is None:
+        parser.error(
+            "one of the arguments --athena-csv --athena-postgres --rules is required"
+        )
     try:
         output = enrich_file(
             args.input,
             args.output,
             _enrichment_from_args(args),
-            verbose=True,
+            verbose=args.verbose,
         )
     except Exception as exc:
         parser.exit(1, f"suMEDS-enrich: error: {exc}\n")
@@ -186,12 +206,41 @@ def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_ontology_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rules",
+        type=Path,
+        help="sumeds-rules/0.1 YAML with ontology, crosswalk and hierarchy rules",
+    )
+    parser.add_argument(
+        "--ontology-source",
+        metavar="URL_OR_DIR",
+        help="ontology pack repository: http(s) or file:// URL, or a local "
+        "directory (default: $SUMEDS_ONTOLOGY_SOURCE or the SumMEDS GitHub repo)",
+    )
+    parser.add_argument(
+        "--ontology-ref",
+        metavar="REF",
+        help="git ref of the default GitHub pack repository (default: main)",
+    )
+    parser.add_argument(
+        "--offline",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="use only cached or local ontology packs (default: disabled)",
+    )
+
+
 def _enrichment_from_args(
     args: argparse.Namespace, current: EnrichmentConfig | None = None
 ) -> EnrichmentConfig | None:
     config = current
+    source: dict[str, object] = {}
     if args.athena_csv is not None or args.athena_postgres is not None:
         source = {"csv_dir": args.athena_csv, "postgres": args.athena_postgres}
+    if args.rules is not None:
+        source["rules"] = args.rules
+    if source:
         # A CLI source replaces the YAML source but keeps its hierarchy options.
         config = replace(current, **source) if current else EnrichmentConfig(**source)
     options = {
@@ -200,10 +249,16 @@ def _enrichment_from_args(
         "sibling_codes": args.sibling_codes,
         "exclude_self_parent_code": args.exclude_self_parent_code,
         "child_depth": args.child_depth,
+        "ontology_source": args.ontology_source,
+        "ontology_ref": args.ontology_ref,
+        "offline": args.offline,
     }
     if config is None:
         if any(value is not None for value in options.values()):
-            raise ValueError("hierarchy options require an Athena enrichment source")
+            raise ValueError(
+                "hierarchy and ontology options require an Athena enrichment "
+                "source or --rules"
+            )
         return None
     return config.with_overrides(**options)
 
