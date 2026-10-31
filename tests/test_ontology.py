@@ -45,6 +45,15 @@ LOINC = [
     ("2160-0", "Creatinine [Mass/volume] in Serum or Plasma", "ACTIVE"),
     ("8867-4", "Heart rate", "ACTIVE"),
 ]
+# Synthetic ComponentHierarchyBySystem rows: 2160-0 sits on two paths.
+LOINC_HIERARCHY = [
+    ("", "1", "", "LP1-1", "{component}"),
+    ("LP1-1", "1", "LP1-1", "LP2-9", "Chemistry"),
+    ("LP1-1.LP2-9", "1", "LP2-9", "LP3-7", "Creatinine | Serum or Plasma"),
+    ("LP1-1.LP2-9.LP3-7", "1", "LP3-7", "2160-0", "Creat SerPl-mCnc"),
+    ("LP1-1", "2", "LP1-1", "LP4-5", "Renal function"),
+    ("LP1-1.LP4-5", "1", "LP4-5", "2160-0", "Creat SerPl-mCnc"),
+]
 
 
 def _sha(data: bytes) -> str:
@@ -68,9 +77,43 @@ def _write_pack(
     header: tuple[str, ...] = ("code", "description", "parent"),
     extra: dict | None = None,
     compress: bool = False,
+    hierarchy: list[tuple] | None = None,
 ) -> None:
     directory = root / vocabulary / "test"
     directory.mkdir(parents=True)
+    if hierarchy:
+        (directory / "hierarchy").mkdir()
+        groups_by_code: dict[str, list[tuple]] = {}
+        for row in hierarchy:
+            groups_by_code.setdefault(row[3][:2], []).append(row)
+        hierarchy_shards = {}
+        for key, items in groups_by_code.items():
+            data = gzip.compress(
+                _csv(
+                    [
+                        "PATH_TO_ROOT",
+                        "SEQUENCE",
+                        "IMMEDIATE_PARENT",
+                        "CODE",
+                        "CODE_TEXT",
+                    ],
+                    items,
+                ),
+                mtime=0,
+            )
+            (directory / "hierarchy" / f"{key}.csv.gz").write_bytes(data)
+            hierarchy_shards[key] = {"file": f"{key}.csv.gz", "sha256": _sha(data)}
+        extra = {
+            **(extra or {}),
+            "hierarchy": {
+                "directory": "hierarchy",
+                "code_column": "CODE",
+                "path_column": "PATH_TO_ROOT",
+                "path_separator": ".",
+                "shard_key_length": 2,
+                "shards": hierarchy_shards,
+            },
+        }
     groups: dict[str, list[tuple]] = {}
     for row in rows:
         groups.setdefault(row[0][:key_length], []).append(row)
@@ -157,6 +200,7 @@ def packs(tmp_path: Path) -> Path:
             }
         },
         compress=True,
+        hierarchy=LOINC_HIERARCHY,
     )
     _write_crosswalk(
         root,
@@ -638,6 +682,15 @@ def athena_icd(tmp_path: Path) -> Path:
     pl.DataFrame(
         [
             (1, "Athena enterocolitis", "Condition", "ICD10CM", "A04.7", None, None),
+            (
+                5,
+                "Athena intestinal infections",
+                "Condition",
+                "ICD10CM",
+                "A04",
+                None,
+                None,
+            ),
             (2, "Athena heart failure", "Condition", "ICD10CM", "I50", None, None),
             (3, "Local concept", "Observation", "LOCAL", "X1", "S", None),
             (4, "Rule target", "Observation", "LOCAL", "X2", "S", None),
@@ -987,6 +1040,10 @@ def test_pinned_release_packs_are_complete_and_verified() -> None:
         for item in files.values():
             data = (manifest_path.parent / item["file"]).read_bytes()
             assert _sha(data) == item["sha256"], item["file"]
+        hierarchy = manifest.get("hierarchy") or {"shards": {}}
+        for item in hierarchy["shards"].values():
+            folder = manifest_path.parent / hierarchy["directory"]
+            assert _sha((folder / item["file"]).read_bytes()) == item["sha256"]
     client = OntologyPacks(str(release_packs))
     assert client.lookup("ICD10CM", ["I50.23"])["I50.23"].ancestors == ("I50.2", "I50")
     pcs = client.lookup("ICD10PCS", ["0DTJ4"])["0DTJ4"]
@@ -995,6 +1052,10 @@ def test_pinned_release_packs_are_complete_and_verified() -> None:
     assert client.lookup("ICD9Proc", ["39.61"])["39.61"].ancestors == ("39.6", "39")
     if "LOINC" in index["vocabularies"]:
         assert client.lookup("LOINC", ["2160-0"])["2160-0"].description
+        creatinine = client.lookup("LOINC", ["2160-0"], hierarchy=True)["2160-0"]
+        named = dict(zip(creatinine.ancestors, creatinine.ancestor_names))
+        assert named["LP14355-9"] == "Creatinine"
+    assert client.lookup("ICD9Proc", ["84.82"])["84.82"].ancestors == ("84.8", "84")
 
 
 def test_report_counts_only_new_same_table_parents(
@@ -1030,3 +1091,265 @@ def test_report_counts_only_new_same_table_parents(
     assert "Ontology files used" not in out
     result = pl.read_parquet(tmp_path / "out.parquet")
     assert result["parent_codes"].to_list() == [None, ["DX//a"], ["DX//a"]]
+
+
+def test_every_added_parent_comes_with_its_name(packs: Path, tmp_path: Path) -> None:
+    frame = pl.DataFrame(
+        {
+            "code": [
+                "DIAGNOSIS//ICD//10//I5023",
+                "DIAGNOSIS//ICD//10//A047",
+                "ICD10_PCS//0DT",
+                "OTHER",
+            ],
+            "parent_codes": [None, ["ICD10CM/A04.7", "LOCAL"], None, ["KEEP"]],
+        }
+    )
+    rows = _enrich(frame, packs, ICD_RULES)
+    assert rows["DIAGNOSIS//ICD//10//I5023"]["parent_names"] == [
+        "Acute on chronic systolic (congestive) heart failure",
+        "Systolic (congestive) heart failure",
+        "Heart failure",
+    ]
+    # An existing entry gets the name of the code it names; LOCAL has none.
+    assert rows["DIAGNOSIS//ICD//10//A047"]["parent_names"] == [
+        "Enterocolitis due to Clostridium difficile",
+        None,
+        "Other bacterial intestinal infections",
+    ]
+    assert rows["ICD10_PCS//0DT"]["parent_names"] == [
+        "Medical and Surgical @ Gastrointestinal System @ Resection",
+        "Medical and Surgical @ Gastrointestinal System",
+        "Medical and Surgical",
+    ]
+    assert rows["OTHER"]["parent_names"] == [None]
+
+    # Names survive a CSV round trip (JSON arrays, as names may contain "|"),
+    # and a second run keeps them.
+    source = tmp_path / "codes.parquet"
+    frame.write_parquet(source)
+    config = EnrichmentConfig(rules=ICD_RULES, ontology_source=str(packs))
+    enrich_file(source, tmp_path / "once.csv", config)
+    text = (tmp_path / "once.csv").read_text()
+    assert '"[""Heart failure""' not in text  # nearest parent comes first
+    assert '""Systolic (congestive) heart failure""' in text
+    enrich_file(tmp_path / "once.csv", tmp_path / "twice.parquet", config)
+    again = {
+        row["code"]: row
+        for row in pl.read_parquet(tmp_path / "twice.parquet").to_dicts()
+    }
+    assert again["DIAGNOSIS//ICD//10//A047"]["parent_names"] == [
+        "Enterocolitis due to Clostridium difficile",
+        None,
+        "Other bacterial intestinal infections",
+    ]
+
+
+LAB_RULES = {
+    "schema": "sumeds-rules/0.1",
+    "crosswalk": [
+        {
+            "id": "labs",
+            "pattern": r"^LAB//(?P<key>[0-9]+)//",
+            "table": "demo/lab_loinc",
+            "key_column": "itemid",
+            "code_column": "loinc_code",
+            "vocabulary": "LOINC",
+            "where": {"source_table": "labevents"},
+        }
+    ],
+}
+
+
+def test_loinc_parts_are_opt_in_and_named(packs: Path, tmp_path: Path) -> None:
+    frame = pl.DataFrame(
+        {"code": ["LAB//100//mg/dL"], "description": ["Creatinine (dataset text)"]}
+    )
+    plain = _enrich(frame, packs, LAB_RULES)["LAB//100//mg/dL"]
+    # The dataset keeps its description; the LOINC code travels with its name.
+    assert plain["description"] == "Creatinine (dataset text)"
+    assert plain["parent_codes"] == ["LOINC//2160-0"]
+    assert plain["parent_names"] == ["Creatinine [Mass/volume] in Serum or Plasma"]
+
+    parts = _enrich(frame, packs, LAB_RULES, loinc_hierarchy=True)["LAB//100//mg/dL"]
+    assert parts["parent_codes"] == [
+        "LOINC//2160-0",
+        "LOINC//LP3-7",
+        "LOINC//LP2-9",
+        "LOINC//LP1-1",
+        "LOINC//LP4-5",
+    ]
+    assert parts["parent_names"] == [
+        "Creatinine [Mass/volume] in Serum or Plasma",
+        "Creatinine | Serum or Plasma",
+        "Chemistry",
+        "{component}",
+        "Renal function",
+    ]
+    client = OntologyPacks(str(packs))
+    entry = client.lookup("LOINC", ["2160-0", "8867-4"], hierarchy=True)
+    assert entry["8867-4"].ancestors == ()
+    assert client.stats["LOINC hierarchy"]["shards"] == 2  # "21" and "LP" only
+
+
+def test_no_packs_uses_athena_only(
+    packs: Path,
+    athena_icd: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    def no_packs(*args, **kwargs):
+        raise AssertionError("packs must not be fetched with packs disabled")
+
+    monkeypatch.setattr("sumeds.enrich.OntologyPacks", no_packs)
+    rules = {**ICD_RULES, "crosswalk": LAB_RULES["crosswalk"]}
+    frame = pl.DataFrame({"code": ["DIAGNOSIS//ICD//10//A047", "LAB//100//mg/dL"]})
+    config = EnrichmentConfig(rules=rules, csv_dir=athena_icd, packs=False)
+    result = enrich_metadata(frame.lazy(), config).collect()
+    rows = {row["code"]: row for row in result.to_dicts()}
+    athena = rows["DIAGNOSIS//ICD//10//A047"]
+    assert athena["concept_id"] == 1
+    # Athena keeps the ICD hierarchy only as "Is a" links; the valid shorter code
+    # is added as the parent, as the pack would.
+    assert athena["parent_codes"] == ["ICD10CM//A04.7", "ICD10CM//A04"]
+    assert athena["parent_names"] == [
+        "Athena enterocolitis",
+        "Athena intestinal infections",
+    ]
+    assert rows["LAB//100//mg/dL"]["parent_codes"] is None
+
+    source = tmp_path / "codes.parquet"
+    frame.write_parquet(source)
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(json.dumps(rules))
+    assert (
+        enrich_main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out.parquet"),
+                "--athena-csv",
+                str(athena_icd),
+                "--rules",
+                str(rules_path),
+                "--no-packs",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "labs [crosswalk, LOINC, pack]: 0 matched, skipped (packs disabled)" in out
+    with pytest.raises(ValueError, match="packs: false needs an Athena source"):
+        EnrichmentConfig(rules=rules, packs=False)
+
+
+HIERARCHY_ONLY = {
+    "schema": "sumeds-rules/0.1",
+    "hierarchy": [
+        {
+            "id": "paths",
+            "pattern": r"^(?P<prefix>DX//)(?P<path>.+)$",
+            "group": "path",
+            "separator": "|",
+        }
+    ],
+}
+
+
+def test_packs_resolve_layouts_and_parent_references(
+    packs: Path, tmp_path: Path, capsys
+) -> None:
+    frame = pl.DataFrame(
+        {
+            "code": ["ICD10CM//I50.23", "DX//chf", "DX//chf|acute", "LOINC/2160-0"],
+            "parent_codes": [
+                None,
+                ["ICD10CM/I50.23", "ICD10CM/A04.72"],
+                ["ICD10CM/I50.23"],
+                ["LOINC/LP2-9"],
+            ],
+        }
+    )
+    rows = _enrich(frame, packs, HIERARCHY_ONLY)
+    # A VOCABULARY//CODE layout validated by the pack, without itself as parent.
+    layout = rows["ICD10CM//I50.23"]
+    assert layout["vocabulary_id"] == "ICD10CM" and layout["concept_code"] == "I50.23"
+    assert layout["description"].startswith("Acute on chronic")
+    assert layout["parent_codes"] == ["ICD10CM//I50.2", "ICD10CM//I50"]
+    # The first parent reference identifies the code, as with Athena; every
+    # reference is named and its ancestors follow, before same-table parents.
+    chf = rows["DX//chf"]
+    assert chf["concept_code"] == "I50.23"
+    assert chf["parent_codes"] == [
+        "ICD10CM/I50.23",
+        "ICD10CM/A04.72",
+        "ICD10CM//I50.2",
+        "ICD10CM//I50",
+        "ICD10CM//A04.7",
+        "ICD10CM//A04",
+    ]
+    assert chf["parent_names"][:2] == [
+        "Acute on chronic systolic (congestive) heart failure",
+        "Enterocolitis due to C. difficile, not specified as recurrent",
+    ]
+    assert None not in chf["parent_names"]
+    assert rows["DX//chf|acute"]["parent_codes"][-1] == "DX//chf"
+    # A LOINC Part reference is not a term of the pack, so it stays unnamed
+    # unless the LOINC hierarchy adds it.
+    loinc = rows["LOINC/2160-0"]
+    assert loinc["concept_code"] == "2160-0"
+    assert loinc["parent_codes"] == ["LOINC/LP2-9"]
+    assert loinc["parent_names"] == [None]
+    parts = _enrich(frame, packs, HIERARCHY_ONLY, loinc_hierarchy=True)
+    assert parts["LOINC/2160-0"]["parent_codes"] == [
+        "LOINC/LP2-9",
+        "LOINC//LP3-7",
+        "LOINC//LP1-1",
+        "LOINC//LP4-5",
+    ]
+    assert parts["LOINC/2160-0"]["parent_names"][0] == "Chemistry"
+
+    excluded = _enrich(frame, packs, HIERARCHY_ONLY, exclude_self_parent_code=True)
+    assert excluded["DX//chf"]["parent_codes"][:2] == [
+        "ICD10CM/A04.72",
+        "ICD10CM//I50.2",
+    ]
+
+    source = tmp_path / "codes.parquet"
+    frame.write_parquet(source)
+    enrich_file(
+        source,
+        tmp_path / "out.parquet",
+        EnrichmentConfig(rules=HIERARCHY_ONLY, ontology_source=str(packs)),
+        verbose=True,
+    )
+    out = capsys.readouterr().out
+    # Three distinct references; the LOINC Part is not a term of the pack.
+    assert "Existing parent references: 2 of 3 found (Athena 0, pack 2)" in out
+    assert "parent reference (unique codes): 4 validated (Athena 0, pack 4)" in out
+
+
+def test_loinc_hierarchy_needs_rules_and_packs(
+    athena_icd: Path, tmp_path: Path, capsys
+) -> None:
+    with pytest.raises(ValueError, match="loinc_hierarchy needs"):
+        EnrichmentConfig(csv_dir=athena_icd, loinc_hierarchy=True)
+    with pytest.raises(ValueError, match="loinc_hierarchy needs"):
+        EnrichmentConfig(
+            rules=LAB_RULES, csv_dir=athena_icd, packs=False, loinc_hierarchy=True
+        )
+    source = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["LAB//100//mg/dL"]}).write_parquet(source)
+    with pytest.raises(SystemExit):
+        enrich_main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out.parquet"),
+                "--athena-csv",
+                str(athena_icd),
+                "--loinc-hierarchy",
+            ]
+        )
+    assert "loinc_hierarchy needs" in capsys.readouterr().err

@@ -48,8 +48,10 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--child-depth N` | Maximum descendant depth (default `3`, range `1`–`100`) |
 | `--rules PATH` | `sumeds-rules/0.1` file: ontology, crosswalk and same-table hierarchy rules |
 | `--ontology-source URL_OR_DIR` | Pack repository URL, `file://` URL, or directory (default `$SUMEDS_ONTOLOGY_SOURCE`, else GitHub) |
-| `--ontology-ref REF` | Release tag of the default pack repository, `sumeds-ontologies` (default: the pinned `v0.1.0`; other refs warn) |
+| `--ontology-ref REF` | Release tag of the default pack repository, `sumeds-ontologies` (default: the pinned `v0.2.0`; other refs warn) |
 | `--offline`, `--no-offline` | Use only cached or local packs (disabled by default) |
+| `--packs`, `--no-packs` | Fetch packs and crosswalk tables (enabled by default); `--no-packs` needs an Athena source, validates rule codes against Athena only, and skips crosswalk rules |
+| `--loinc-hierarchy`, `--no-loinc-hierarchy` | Add LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes looked up in the LOINC pack; needs `--rules` and packs (disabled by default) |
 | `--verbose` | Print the enrichment coverage and rule report |
 | `--version` | Print the installed version |
 
@@ -100,7 +102,8 @@ and/or a `--rules` file validated against the public ontology packs. Use
 `suMEDS-enrich INPUT -o OUTPUT` (the same source, hierarchy, and ontology
 flags; `--no-verbose` hides its report) to enrich an existing metadata or
 summary table without running a summary. See
-[Metadata enrichment](enrichment.md).
+[How enrichment works](enrichment.md), [Athena enrichment](athena.md), and
+[Rules and ontology packs](rules.md).
 
 ## Output formats
 
@@ -124,6 +127,7 @@ Parquet when exact nested types matter.
 | `parent_codes` | list[string], nullable | Existing values plus valid Athena or pack ancestors through root by default, then same-table parents from hierarchy rules |
 | `child_codes` | list[string], nullable | Existing values plus optional Athena or pack descendants |
 | `sibling_codes` | list[string], nullable | Existing values plus optional children of Athena or pack ancestors |
+| `parent_names`, `child_names`, `sibling_names` | list[string], nullable | Name of each entry of the matching list, aligned with it; null where unknown (JSON arrays in CSV) |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
 | `vocabulary_id` | string, nullable | Matched Athena or pack vocabulary when enrichment is enabled |
 | `concept_id` | int64, nullable | Numeric OMOP concept identifier |

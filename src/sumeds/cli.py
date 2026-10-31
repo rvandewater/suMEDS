@@ -10,6 +10,7 @@ from typing import Sequence
 
 from .config import EnrichmentConfig, SummaryConfig
 from .enrich import enrich_file
+from .ontology import DEFAULT_REF
 from .summary import summarize
 
 
@@ -222,13 +223,29 @@ def _add_ontology_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ontology-ref",
         metavar="REF",
-        help="git ref of the default GitHub pack repository (default: main)",
+        help="release tag of the default GitHub pack repository "
+        f"(default: {DEFAULT_REF})",
     )
     parser.add_argument(
         "--offline",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="use only cached or local ontology packs (default: disabled)",
+    )
+    parser.add_argument(
+        "--packs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="fetch ontology packs and crosswalk tables (default: enabled); with "
+        "--no-packs, rules validate codes against Athena only and crosswalk rules "
+        "are skipped",
+    )
+    parser.add_argument(
+        "--loinc-hierarchy",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add the LOINC Parts of the LOINC multiaxial hierarchy pack as parents "
+        "of LOINC codes, named in parent_names (default: disabled)",
     )
 
 
@@ -253,6 +270,8 @@ def _enrichment_from_args(
         "ontology_source": args.ontology_source,
         "ontology_ref": args.ontology_ref,
         "offline": args.offline,
+        "packs": args.packs,
+        "loinc_hierarchy": args.loinc_hierarchy,
     }
     if config is None:
         if any(value is not None for value in options.values()):

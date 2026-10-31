@@ -28,8 +28,10 @@ enrichment:
   child_depth: 3
   # rules: rules.yaml            # sumeds-rules/0.1, relative to this file
   # ontology_source: null        # URL or directory; default: sumeds-ontologies
-  # ontology_ref: v0.1.0         # release tag of sumeds-ontologies
+  # ontology_ref: v0.2.0         # release tag of sumeds-ontologies
   # offline: false
+  # packs: true                  # false: rules use Athena only (needs csv_dir/postgres)
+  # loinc_hierarchy: false       # true: LOINC Parts as parents of LOINC codes
 ```
 
 ## Summary options
@@ -158,7 +160,8 @@ removes existing metadata unless you set it to `true`, which removes the parent
 reference used to match the Athena concept itself. CLI equivalents are
 `--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
 `--[no-]exclude-self-parent-code`, and `--child-depth`. See
-[Metadata enrichment](enrichment.md) for hierarchy semantics and output fields.
+[How enrichment works](enrichment.md) for the process, hierarchy semantics
+and output fields, and [Athena enrichment](athena.md) for the Athena sources.
 
 `rules` (CLI `--rules`) is resolved relative to the YAML file.
 `ontology_source` (CLI `--ontology-source`; default: the
@@ -166,10 +169,18 @@ reference used to match the Athena concept itself. CLI equivalents are
 `rvandewater/sumeds-ontologies` GitHub repository) is an `http(s)://` or
 `file://` URL or a directory (relative paths are resolved against the YAML
 file). `ontology_ref` (CLI `--ontology-ref`, default: the pinned release tag,
-`v0.1.0`) selects the release of the default GitHub source; a ref that is not
+`v0.2.0`) selects the release of the default GitHub source; a ref that is not
 a release tag or full commit sha prints a warning. `offline`
-(CLI `--[no-]offline`, default `false`) uses only cached or local packs. See
-[Rules and ontology packs](enrichment.md#rules-and-ontology-packs).
+(CLI `--[no-]offline`, default `false`) uses only cached or local packs.
+`packs` (CLI `--[no-]packs`, default `true`) set to `false` fetches no packs
+or crosswalk tables, so rules validate against the Athena source only and
+crosswalk rules are skipped; it needs `csv_dir` or `postgres`.
+`loinc_hierarchy` (CLI `--[no-]loinc-hierarchy`, default `false`) adds the
+LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes looked
+up in the LOINC pack; it needs `rules` and `packs: true`, and is rejected
+otherwise. See
+[Rules and ontology packs](rules.md) and
+[Athena only](athena.md#athena-only-no-packs).
 
 ## Precedence
 

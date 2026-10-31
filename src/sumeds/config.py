@@ -29,7 +29,9 @@ class EnrichmentConfig:
 
     Set at most one OHDSI Athena source (``csv_dir`` or ``postgres``) and/or a
     ``rules`` file (path, mapping, or :class:`OntologyRules`). Without Athena,
-    rules use the public ontology packs only.
+    rules use the public ontology packs only; with ``packs: false``, rules use
+    Athena only and crosswalk rules are skipped. ``loinc_hierarchy`` adds the
+    LOINC Parts of the LOINC multiaxial hierarchy pack as parents of LOINC codes.
     """
 
     csv_dir: Path | None = None
@@ -43,6 +45,8 @@ class EnrichmentConfig:
     ontology_source: str | None = None
     ontology_ref: str = DEFAULT_REF
     offline: bool = False
+    packs: bool = True
+    loinc_hierarchy: bool = False
 
     def __post_init__(self) -> None:
         if self.csv_dir is not None and self.postgres is not None:
@@ -57,6 +61,11 @@ class EnrichmentConfig:
             raise ValueError(
                 "set exactly one of enrichment.csv_dir or enrichment.postgres, "
                 "or enrichment.rules to use the public ontology packs only"
+            )
+        if self.packs is False and self.csv_dir is None and self.postgres is None:
+            raise ValueError(
+                "enrichment.packs: false needs an Athena source "
+                "(enrichment.csv_dir or enrichment.postgres)"
             )
         if isinstance(self.ontology_source, Path):
             object.__setattr__(self, "ontology_source", str(self.ontology_source))
@@ -88,6 +97,8 @@ class EnrichmentConfig:
             "sibling_codes",
             "exclude_self_parent_code",
             "offline",
+            "packs",
+            "loinc_hierarchy",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"enrichment.{name} must be true or false")
@@ -97,6 +108,11 @@ class EnrichmentConfig:
             or not 1 <= self.child_depth <= 100
         ):
             raise ValueError("enrichment.child_depth must be an integer from 1 to 100")
+        if self.loinc_hierarchy and (self.rules is None or not self.packs):
+            raise ValueError(
+                "enrichment.loinc_hierarchy needs enrichment.rules and the ontology "
+                "packs (packs: true); without them it would add nothing"
+            )
 
     with_overrides = _with_overrides
 
