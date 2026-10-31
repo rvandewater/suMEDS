@@ -1,394 +1,350 @@
-# Metadata enrichment
+# How enrichment works
 
-suMEDS can fill missing code metadata from two kinds of sources, alone or
-together. Enrichment is optional and uses no patient-level fields.
+Enrichment fills in missing code metadata for the codes of a MEDS metadata
+table or a suMEDS summary: descriptions, vocabulary codes, parent, child and
+sibling codes, and OMOP concept fields. It is optional. It reads only code
+strings and existing metadata, never patient-level fields, and it never
+removes or rewrites what the table already has.
 
-- **OHDSI Athena**, downloaded as CSV files or loaded into PostgreSQL: licensed,
-  every vocabulary, obtained by each user.
-- **Rules over public ontology packs**: a `sumeds-rules/0.1` YAML file maps
-  dataset codes to vocabulary codes, validated against sharded packs that
-  suMEDS hosts and fetches on demand (ICD-10-CM, ICD-10-PCS, ICD-9-CM, ICD-9
-  procedures, LOINC), and adds parent codes that exist in the same table. See
-  [Rules and ontology packs](#rules-and-ontology-packs).
+It runs in two places:
 
-With both, Athena is consulted first and the packs fill what it did not match.
+- **Inside `suMEDS`.** With `--athena-csv`, `--athena-postgres` or `--rules`,
+  enrichment runs after rare codes are masked, so only released codes are
+  looked up.
+- **Standalone.** `suMEDS-enrich INPUT -o OUTPUT` enriches an existing table
+  without scanning event data. It does no privacy filtering (see [Privacy
+  ordering](#privacy-ordering)).
 
-## Resolved fields
+## Sources
 
-For each valid Athena match, suMEDS adds or fills:
+Two kinds of sources validate codes, alone or together:
 
-| Column | Type | Source |
+| | OHDSI Athena | Rules and ontology packs |
 |---|---|---|
-| `description` | string | `concept.concept_name` |
-| `parent_codes` | list[string] | all valid ancestors through the root (default) |
-| `child_codes` | list[string] | valid descendants up to `child_depth` (optional) |
-| `sibling_codes` | list[string] | valid direct children of every ancestor, excluding self (optional) |
-| `parent_names`, `child_names`, `sibling_names` | list[string] | the name of each entry of the list beside it, aligned entry by entry; null where no name is known |
-| `vocabulary_id` | string | `concept.vocabulary_id` |
-| `concept_id` | int64 | numeric OMOP concept identifier |
-| `concept_code` | string | vocabulary-local code |
-| `domain_id` | string | OMOP domain |
-| `standard_concept` | string | `S`, `C`, or null |
+| What it is | your own download of the OMOP standardized vocabularies, as CSV files or in PostgreSQL | a `sumeds-rules/0.1` file mapping dataset codes to vocabulary codes, checked against public packs |
+| Vocabularies | every vocabulary in your download | ICD-10-CM, ICD-10-PCS, ICD-9-CM, ICD-9 procedures, LOINC, and dataset crosswalk tables |
+| Adds | names, OMOP concept ids, domains, standard flags, ancestors from `CONCEPT_ANCESTOR` | names and the pack hierarchy; parents that are codes of the same table |
+| Obtained | each user downloads it under the Athena terms | fetched on demand from a pinned release of [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies), or a local copy |
+| Details | [Athena enrichment](athena.md) | [Rules and ontology packs](rules.md) |
 
-Enrichment is non-destructive. Existing descriptions and other scalar values
-are never overwritten, and existing relationship lists are kept verbatim, in
-order, with new entries appended after them. An entry is only appended when
-the list does not already contain it; for parent references,
-`VOCABULARY/CONCEPT_CODE` and `VOCABULARY//CONCEPT_CODE` count as the same
-entry, and the existing spelling is kept. The one opt-in exception is
-`--exclude-self-parent-code` (`exclude_self_parent_code: true`), which removes
-the existing parent reference used to resolve the matched concept itself. Newly
-added codes must resolve to a valid row in the same Athena `CONCEPT` source.
-Invalid, missing, self-referential, and cyclic hierarchy rows are ignored.
-Unmatched concepts pass through unchanged.
-Please check the [Athena search portal](https://athena.ohdsi.org/search-terms/start) to confirm.
+These combine into four setups:
 
-Every relationship list comes with a names list of the same length:
-`parent_names[i]` names `parent_codes[i]` (the Athena `concept_name` or the
-pack description of that code, the LOINC Part name for a LOINC Part). Existing
-entries keep an existing name and otherwise get the name of the code they
-reference, so a dataset that keeps its own `description` still carries the
-official name of every vocabulary code it is linked to. The LOINC license
-requires this when such a table is shared: every LOINC code and Part number
-must come with its LOINC display name (Section 10.3). CSV output stores the
-names lists as JSON arrays, because names can contain `|` and can be missing.
+- **Athena only**: `--athena-csv DIR` or `--athena-postgres CONNINFO`.
+  Resolves codes in a `VOCABULARY//CODE` layout, and codes whose first
+  existing parent is a vocabulary reference.
+- **Packs only**: `--rules rules.yaml`. Resolves codes that a rule maps to a
+  pack vocabulary, directly or through a crosswalk table.
+- **Athena and packs**: `--rules rules.yaml --athena-csv DIR`. Resolves both
+  of the above. Athena's fields win, and the pack hierarchy is merged in.
+- **Athena, no packs**: `--rules rules.yaml --athena-csv DIR --no-packs`.
+  Validates rule codes against Athena only. Nothing is downloaded, and
+  crosswalk rules are skipped.
 
-Parent expansion includes every positive `min_levels_of_separation` through the
-root and is enabled by default. OMOP keeps the ICD hierarchy (ICD-10-CM,
-ICD-10-PCS, ICD-9-CM, ICD-9 procedures) only as `Is a` relationships, not in
-`CONCEPT_ANCESTOR`, so for these vocabularies suMEDS adds every valid shorter
-code of the same vocabulary as a parent (`I50.23` gets `I50.2` and `I50`).
-For ICD-10-CM and ICD-9-CM this equals Athena's transitive `Is a` hierarchy;
-for ICD-9 procedures it adds the shorter codes that Athena's `Is a` links lack. Disable it with `--no-parent-codes` or
-`parent_codes: false`. Child and sibling expansion are opt-in. Children include
-transitive descendants through `child_depth` (default `3`); siblings are the
-direct children of each valid ancestor, excluding the matched concept itself.
+With neither an Athena source nor a rules file, there is no enrichment.
 
-## Rules and ontology packs
+## How a code is enriched
 
-### Rules file
-
-Pass a rules file with `--rules PATH` (both `suMEDS` and `suMEDS-enrich`),
-`enrichment.rules` in YAML (relative to the YAML file), or
-`EnrichmentConfig(rules=...)` (a path, a mapping, or `load_rules(...)`). The
-format is strict: unknown keys, a wrong `schema`, invalid regular expressions,
-missing named groups, unknown group references in `replace`, and duplicate ids
-are errors.
-
-```yaml
-schema: sumeds-rules/0.1            # required
-
-ontology:                            # regex to vocabulary code; tried in order
-  - id: icd10cm-diagnoses            # required, unique across all rules
-    pattern: '^DIAGNOSIS//ICD//10//(?P<code>[A-Z][0-9][0-9A-Z][0-9A-Z]{0,4})$'
-    vocabulary: ICD10CM              # OMOP vocabulary_id
-    normalize:                       # optional ordered re.sub steps on `code`
-      - {pattern: '^(...)(.+)$', replace: '\1.\2'}
-    validate: pack                   # pack (default) | athena | none
-
-crosswalk:                           # table lookup to vocabulary code; after ontology rules
-  - id: nwicu-lab-loinc
-    pattern: '^LAB//(?P<key>[0-9]+)//'   # named group `key`
-    table: nwicu/loinc_parents           # crosswalks/<dataset>/<name>.csv at the source
-    key_column: itemid
-    code_column: loinc_code
-    vocabulary: LOINC
-    where: {source_table: labevents}     # optional: column: value or [values]
-    normalize: []                        # optional, applied to code_column values
-    validate: pack                       # pack (default) | athena | none
-
-hierarchy:                           # parents that are codes of the same table
-  - id: eicu-diagnosis-paths
-    pattern: '^(?P<prefix>DIAGNOSIS//)(?P<path>.+)$'
-    group: path                      # a named group of `pattern`
-    separator: '|'                   # mode: separator (implied by `separator`)
-    nearest_only: true               # default true
-  - id: icd-prefix-in-dataset
-    pattern: '^(?P<prefix>DIAGNOSIS//ICD10_CN//)(?P<code>.+)$'
-    group: code
-    mode: prefix
-    ignore: '.'                      # optional characters skipped when truncating
-    nearest_only: true
-  - id: ontology-parents-in-dataset
-    from_ontology: true
-    rules: [icd10cm-diagnoses]       # optional: only codes resolved by these rules
-    nearest_only: true
-```
-
-Patterns are Python regular expressions applied with `re.search`, so anchor
-them with `^` and `$`.
-
-**Ontology and crosswalk rules.** A matching code yields a vocabulary code: the
-`code` group after `normalize`, or every `code_column` value of the crosswalk
-rows whose `key_column` equals the `key` group (and that pass `where`). These
-candidates rank before the built-in `VOCABULARY//CODE` layouts below, in file
-order (ontology rules, then crosswalk rules); the first one that validates
-wins. `validate` decides what may validate it:
-
-| `validate` | Athena configured | No Athena |
-|---|---|---|
-| `pack` | Athena first; else the public pack | the public pack |
-| `athena` | Athena only | rule skipped (reported) |
-| `none` | Athena first; else tag only | tag only |
-
-A tag is a fallback: when a later rule, or a built-in layout below, validates
-the same code through a pack or Athena, that validated code wins over the tag.
-
-A validated code gets `description` (only where null), `vocabulary_id` and
-`concept_code` (and the Athena-only fields when Athena validated it), and
-`parent_codes` = the vocabulary code itself followed by its ancestors through
-the root, as `VOCABULARY//CODE` (pack ancestors nearest first). `child_codes`
-and `sibling_codes` follow the same options and semantics as for Athena. When
-Athena validates a rule's code, Athena's scalar fields win and the pack's
-hierarchy is merged in (for ICD both give the same parents). A tag
-(`validate: none`) adds
-only the vocabulary code to `parent_codes`, with no description. A `pack` rule
-for a vocabulary without a pack fails with the list of available packs; codes
-missing from the pack or from Athena get nothing, so no dangling code is added.
-A code is never its own parent, child or sibling: when a dataset code already
-is a vocabulary reference (OMOP-style `ICD10PCS//0DTJ4ZZ` or
-`ICD10PCS/0DTJ4ZZ`), its rule's vocabulary code is not added as its parent.
-If a crosswalk key maps to several codes, Athena keeps the lowest concept id,
-a pack the first code in sort order, and a tag lists them all.
-
-**LOINC Parts as parents** are opt-in: `--loinc-hierarchy`
-(`loinc_hierarchy: true`) adds every LOINC Part on a LOINC code's paths in the
-LOINC multiaxial hierarchy (ComponentHierarchyBySystem) from the LOINC pack,
-nearest first, each named by its Part name in `parent_names`; e.g. `2160-0`
-gets `LP385359-7` (Creatinine | Serum or Plasma | Chemistry - non-challenge),
-`LP14355-9` (Creatinine), `LP31398-8` (Renal function) and so on up to the
-root. Athena already gives LOINC codes their LOINC ancestors through
-`CONCEPT_ANCESTOR`.
-
-**Athena only.** `--no-packs` (`packs: false`, which needs an Athena source)
-fetches no packs or crosswalk tables: rules validate their codes against Athena
-only, whatever their `validate` mode, and crosswalk rules are skipped. With the
-ICD parents above, an Athena download then validates the same codes and gives
-the same ICD parents as the packs, with Athena's names and apart from release
-differences; crosswalk tables exist only in `sumeds-ontologies`.
-
-**Hierarchy rules** add parents that are codes of the same (released) table,
-appended after the vocabulary parents, so the first parent stays the
-vocabulary reference that the parent-reference fallback relies on. They never
-add a code that is not in the table, never the code itself, and only when
-`parent_codes` is enabled.
-
-- `separator`: drop the last `separator`-delimited segment of `group` (and
-  then the next one) and keep the rebuilt code if it exists:
-  `DIAGNOSIS//a|b|c` gets `DIAGNOSIS//a|b`, or `DIAGNOSIS//a` if only that
-  exists.
-- `prefix`: drop the last character of `group` repeatedly, skipping `ignore`
-  characters, so `I50.23` tries `I50.2`, then `I50`, `I5`, `I`. This serves
-  vocabularies without a public pack (WHO ICD-10, ICD-10-CN).
-- `from_ontology`: a code whose resolved vocabulary code is an ancestor of
-  this code's resolved vocabulary code (from a pack or Athena) becomes a
-  parent, e.g. `DIAGNOSIS//ICD//10//I5023` gets `DIAGNOSIS//ICD//10//I502`.
-- `nearest_only: true` (default) adds only the closest existing ancestor;
-  `false` adds every existing ancestor, nearest first.
-
-Existing metadata is never overwritten: descriptions and scalar fields are
-filled only where null, and relationship lists are merged without duplicates.
-
-### Packs and crosswalks
-
-| Pack | Release | Codes | Source | License |
-|---|---|---:|---|---|
-| `ICD10CM` | `fy2016-fy2027` | 99,085 | CDC/NCHS order files, FY2016 to FY2027 (retired codes kept, with `first_year`/`last_year`) | no license agreement; adapts WHO's ICD-10 |
-| `ICD10PCS` | `fy2016-fy2027` | 197,789 | CMS order files and code tables, FY2016 to FY2027, including every 1- to 6-character prefix described from the tables' axis labels | no license agreement; no WHO content |
-| `ICD9CM` | `v32` | 17,541 | CMS v32 (final) plus NCHS FY2012 tabular headers | no license agreement; adapts WHO's ICD-9 |
-| `ICD9Proc` | `v32` | 4,650 | as ICD9CM | no license agreement; adapts WHO's ICD-9 |
-| `LOINC` | `2.83` | 105,050 | LOINC Table Core 2.83, original fields unchanged, all statuses, `MapTo.csv`; the ComponentHierarchyBySystem rows of these terms and their Parts | LOINC license |
-
-Codes use the OMOP `concept_code` format (`I50.23`, `401.9`, `39.61`,
-`0DTJ4ZZ`, `2160-0`), so rules normalize dataset codes to it. ICD-10-PCS
-prefixes are described by their axis labels joined with ` @ `, e.g. `0DTJ4` is
-`Medical and Surgical @ Gastrointestinal System @ Resection @ Appendix @
-Percutaneous Endoscopic`. LOINC descriptions are `LONG_COMMON_NAME`.
-
-Crosswalk tables live next to the packs (`crosswalks/eicu/lab_loinc`,
-`crosswalks/hirid/observation_loinc`, `crosswalks/nwicu/loinc_parents`,
-`crosswalks/zigong/nursing_vitals_loinc`), so ETL repositories no longer ship
-them. A dataset that already carries a vocabulary column, such as the LOINC
-codes of SICdb or PICdb, can drop ETL-side well-formedness checks of that
-column and validate its codes with an ontology rule (`validate: pack`, or
-`athena`). The packs, crosswalks and their builder live in the separately
-versioned data repository [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies); its
-[pack README](https://github.com/rvandewater/sumeds-ontologies/tree/v0.2.0/ontologies) documents the format, sizes, sources,
-and rebuild commands.
-
-### Fetching, caching, offline use
-
-At enrichment time suMEDS determines which vocabularies and shards the matched
-codes need and fetches only those (plus `index.json` and the manifests). The
-source is, in order of precedence:
-
-1. `--ontology-source URL_OR_DIR` or `enrichment.ontology_source`: an
-   `http(s)://` base URL, a `file://` URL, or a local directory;
-2. the `SUMEDS_ONTOLOGY_SOURCE` environment variable;
-3. `https://raw.githubusercontent.com/rvandewater/sumeds-ontologies/<ref>/ontologies`,
-   with `<ref>` from `--ontology-ref` or `enrichment.ontology_ref`.
-
-The default `<ref>` is a release tag of `sumeds-ontologies` (`v0.2.0` in this
-suMEDS version), and suMEDS pins the sha256 of that release's `index.json`.
-Because the index pins every manifest and each manifest every shard, the
-default enrichment is reproducible byte for byte: if the tag were ever moved,
-the run fails with a checksum error instead of silently changing results. A
-`--ontology-ref` that is neither a release tag (`vX.Y.Z`) nor a full commit
-sha prints a warning. Each suMEDS release states which data release it pins.
-
-Every manifest is checked against the sha256 in `index.json` and every shard
-or table against its manifest; a mismatch is an error. Remote files are cached
-under `${XDG_CACHE_HOME:-~/.cache}/sumeds/ontologies/<source>/`. For the pinned
-default release everything is reused from the cache; for other sources the
-index and manifests are refreshed on each online run, and shards are reused
-while their checksum matches. `--offline` (`enrichment.offline: true`) uses only the cache
-or a local source and fails with a clear message if a needed file is missing.
-
-```bash
-uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
-  --rules rules.yaml                     # public packs only
-uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
-  --rules rules.yaml --athena-csv /vocabularies/athena   # Athena first, then packs
-uv run suMEDS /data/MEDS -o summary.parquet --rules rules.yaml \
-  --ontology-source ../sumeds-ontologies/ontologies --offline --verbose
-```
-
-### Licenses and governance
-
-- Only vocabularies that may be redistributed are hosted. CDC/NCHS and CMS
-  publish ICD-10-CM, ICD-10-PCS, and ICD-9-CM at no cost and without a license
-  agreement. They are not public-domain works as a whole: ICD-10-CM and ICD-9-CM
-  are U.S. clinical modifications of WHO classifications, and WHO keeps the
-  copyright in content taken from them (each pack manifest's `license` field
-  says what the publisher states). LOINC is redistributed under the LOINC
-  license, with its full text and the notice below in the pack folder and in
-  every crosswalk folder; `MapTo.csv` keeps only rows whose codes are in the
-  pack.
-- Vocabularies that may not be redistributed or whose terms are unknown (SNOMED
-  CT, CPT4, WHO ICD-10 itself, ICD-10-CN, ICD-O-3, ATC, and others) are never
-  hosted. Validate them
-  against your own Athena download (`validate: athena`) or tag them
-  (`validate: none`).
-- suMEDS is the single maintained copy of LOINC content for the MEDS ETLs. Its
-  maintainers rebuild the LOINC pack from the official download for each LOINC
-  release (twice a year) and record the release, date, and checksums. Users
-  fetch it and never need a LOINC account. Crosswalk tables carry the LOINC
-  `LONG_COMMON_NAME` of each code verbatim (`loinc_long_common_name`), filled
-  from the pack at build time, never from Athena, whose names can be truncated.
-
-> This material contains content from LOINC (http://loinc.org). LOINC is
-> copyright © Regenstrief Institute, Inc. and the Logical Observation
-> Identifiers Names and Codes (LOINC) Committee and is available at no cost
-> under the license at http://loinc.org/license. LOINC® is a registered United
-> States trademark of Regenstrief Institute, Inc.
-
-### Coverage report
-
-`suMEDS-enrich` prints the report by default (`--no-verbose` silences it);
-`suMEDS --verbose` prints it after a summary. Besides the before/after field
-coverage it lists, for each ontology and crosswalk rule, the codes matched,
-validated (by Athena or a pack), and tagged; for each hierarchy rule the
-same-dataset parents added; the number of same-dataset parent links before and
-after; and the pack files used and downloaded. It reports counts only.
-
-## Code parsing
-
-The original MEDS code is never changed. After any rule candidates, these
-layouts are tried:
+Enrichment works on the unique codes of the table, in eight steps.
 
 ```text
-VOCABULARY//CODE//...
-VOCABULARY//VOCABULARY_VERSION//CODE
+code
+  │  candidates, best first: ontology rules, crosswalk rules,
+  │  VOCABULARY//CODE, VOCABULARY//VERSION//CODE, first parent
+  ▼
+validation: Athena CONCEPT, a pack (validate: pack), or a tag
+  ▼
+best match ─► fields, hierarchy and names ─► same-table parents
+  ▼
+merge into the table, overwriting nothing
 ```
 
-Three-part codes are ambiguous. suMEDS first looks up the second component,
-which preserves codes ending in markers such as `//start` and `//end`. It tries
-the third component only when the second component has no valid match. If
-neither matches, the first non-null existing `parent_codes` reference is tried
-as `VOCABULARY/CODE` or `VOCABULARY//CODE`. This supports metadata such as the
-MIMIC-IV demo, whose event codes are local while parent references identify
-Athena concepts. Malformed and unmatched codes pass through unchanged.
+1. **Select codes.** Rows marked `is_masked` (the rare-code bucket of a
+   summary) are skipped. Every other unique `code` is looked up once.
 
-## Local Athena files
+2. **List candidates.** Each code yields candidate vocabulary codes, as
+   `(vocabulary_id, concept_code)`, ranked in this order:
+    1. every matching [ontology rule](rules.md#ontology-and-crosswalk-rules),
+       in file order: the rule's `code` group after `normalize`;
+    2. every matching crosswalk rule, in file order: the table's codes for the
+       matched key;
+    3. `VOCABULARY//CODE//...`: the first two components of the code;
+    4. `VOCABULARY//VERSION//CODE`: the first and third components of a
+       three-part code;
+    5. the first non-null existing `parent_codes` entry, read as
+       `VOCABULARY/CODE` or `VOCABULARY//CODE`.
 
-Point to an Athena download directory containing at least the original
-tab-delimited `CONCEPT.csv` and `CONCEPT_ANCESTOR.csv` files:
+    Rules come from the rules file. The last three layouts are built in.
+    Trying the second component before the third keeps codes that end in
+    markers such as `//start` and `//end` matched on their second component.
+    The original code is never changed.
 
-```bash
-uv run suMEDS /data/MEDS -o summary.parquet \
-  --athena-csv /vocabularies/athena \
-  --child-codes --child-depth 3 --sibling-codes
+3. **Validate.** With Athena, every candidate is looked up in `CONCEPT` in one
+   batch (valid concepts only). Codes from `validate: pack` rules are looked
+   up in the pack of the rule's vocabulary, unless `--no-packs` is set. A
+   `validate: none` rule tags its code without validation. A
+   `validate: athena` rule needs Athena.
+
+4. **Pick one match per code.** The best-ranked candidate that validates wins.
+   On equal rank, Athena wins over a pack. A tag counts only when nothing
+   validates. If an Athena candidate matches several concepts, the lowest
+   `concept_id` wins.
+
+5. **Fill fields.** The match gives `description`, `vocabulary_id` and
+   `concept_code`. Athena also gives `concept_id`, `domain_id` and
+   `standard_concept`. Then:
+    - after a rule match, `parent_codes` starts with the vocabulary code itself
+      (`LOINC//2160-0`), followed by its ancestors;
+    - after a built-in layout or a parent reference, the code already names
+      the vocabulary code, so only its ancestors are added.
+
+    Ancestors come from Athena (`CONCEPT_ANCESTOR`, plus [ICD shorter
+    codes](athena.md#icd-codes)), from the pack, or both, merged. Children and
+    siblings are added when enabled. Each added code's name goes into the
+    aligned names list (`parent_names` and so on).
+
+6. **Add same-table parents.** [Hierarchy rules](rules.md#hierarchy-rules)
+   append parents that are codes of the same table.
+
+7. **Merge.** Results are merged into the table without overwriting
+   anything; see [Merge rules](#merge-rules).
+
+8. **Report.** Counts only; see [Coverage report](#coverage-report).
+
+## Worked example
+
+This example enriches the public eICU-CRD demo, built with eICU-MEDS 0.1.0.
+Its `metadata/codes.parquet` has 6,481 codes and no `description` column. 860
+diagnosis codes carry ICD-9-CM and ICD-10-CM references in `parent_codes`. The
+sources are the July 2026 Athena download and a rules file with the eICU
+lab-to-LOINC crosswalk (`eicu-lab-loinc`) and `|`-path hierarchy rules.
+
+**A lab code**, `LAB//RESULT//creatinine//mg/dL`, is not a vocabulary code
+and has no parents. Only the crosswalk rule can resolve it: the key
+`creatinine` maps to LOINC `2160-0`.
+
+- **Packs:** description "Creatinine [Mass/volume] in Serum or Plasma",
+  `vocabulary_id` LOINC, `concept_code` 2160-0. `parent_codes` holds
+  `LOINC//2160-0`, named.
+- **Packs with `--loinc-hierarchy`:** as above, plus the 7 LOINC Parts on its
+  path, nearest first ([list](rules.md#loinc-parts-as-parents)).
+- **Athena and packs:** as above, plus `concept_id` 3016723, `domain_id`
+  Measurement, `standard_concept` S. After `LOINC//2160-0`, `parent_codes`
+  holds 65 Athena ancestors sorted by code. They include LOINC Parts, groups
+  and classes, panels that contain the test, and SNOMED procedures
+  ([details](athena.md#hierarchy-from-concept_ancestor)).
+- **Athena, no packs:** nothing. The crosswalk table is not fetched, and the
+  code is not a vocabulary layout.
+
+**A diagnosis code**,
+`DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure|combined systolic and diastolic`,
+has the existing parents `ICD9CM/428.40` and `ICD10CM/I50.40`.
+
+- **Athena:** `DIAGNOSIS` is not a vocabulary, so the first parent reference,
+  `ICD9CM/428.40`, is matched. The code gets that concept's name as its
+  description ("Combined systolic and diastolic heart failure, unspecified"),
+  its `concept_id` 44832381, and `domain_id` Observation. After the two
+  existing entries, the parents `ICD9CM//428` (Heart failure) and
+  `ICD9CM//428.4` (Combined systolic and diastolic heart failure) are
+  appended.
+- **Rules:** the separator hierarchy rule also appends the same-table parent
+  `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure`.
+  This holds in every setup with the rules file.
+- **Packs only:** only the same-table parent. Packs are queried for rule
+  candidates, not for existing parent references.
+
+All setups on the whole table, as unique codes and parent-list entries (1,712
+entries before enrichment):
+
+| Setup | Described | With `concept_id` | Parent entries | Named | Same-table parents |
+|---|---:|---:|---:|---:|---:|
+| Packs | 50 | 0 | 3,127 | 50 | 1,365 |
+| Packs and LOINC Parts | 50 | 0 | 3,469 | 392 | 1,365 |
+| Athena only (no rules) | 860 | 860 | 2,860 | 1,148 | 0 |
+| Athena and packs | 910 | 910 | 5,978 | 2,901 | 1,365 |
+| Athena, no packs | 860 | 860 | 4,225 | 1,148 | 1,365 |
+
+Every entry that enrichment adds from a vocabulary is named. The unnamed
+entries are the 1,712 existing references and the same-table parents (see
+[Names](#names)).
+
+## Output fields
+
+| Column | Type | Filled from |
+|---|---|---|
+| `description` | string | Athena `concept_name`, or the pack description |
+| `parent_codes` | list[string] | ancestors through the root (default on) |
+| `child_codes` | list[string] | descendants up to `child_depth` (opt-in) |
+| `sibling_codes` | list[string] | the direct children of every ancestor, except the code itself (opt-in) |
+| `parent_names`, `child_names`, `sibling_names` | list[string] | the name of each entry of the list beside it, aligned entry by entry; null where no name is known |
+| `vocabulary_id` | string | the matched vocabulary |
+| `concept_id` | int64 | numeric OMOP concept identifier (Athena only) |
+| `concept_code` | string | vocabulary-local code |
+| `domain_id` | string | OMOP domain (Athena only) |
+| `standard_concept` | string | `S`, `C`, or null (Athena only) |
+
+Added codes are written as `VOCABULARY//CODE`. Columns that the table lacks
+are created; relationship lists and their names only when enabled.
+
+## Merge rules
+
+Enrichment is non-destructive:
+
+- Existing descriptions and other scalar values are never overwritten. Only
+  null values are filled.
+- Existing relationship lists are kept verbatim, in order. New entries are
+  appended after them, and only when the list does not already contain them.
+  For parent references, `VOCABULARY/CODE` and `VOCABULARY//CODE` count as
+  the same entry, and the existing spelling is kept.
+- A code is never its own parent, child or sibling.
+- Newly added codes must be valid in the source that supplied them.
+  Invalid, missing, self-referential and cyclic hierarchy rows are ignored.
+- Unmatched codes pass through unchanged.
+- With `--no-parent-codes` (and likewise for children and siblings), the list
+  and its names list are left as they are.
+- In CSV input, relationship lists are `|`-joined text and names lists are
+  JSON arrays. Both are read back into lists.
+
+The one opt-in exception is `--exclude-self-parent-code`
+(`exclude_self_parent_code: true`). It removes the existing parent reference
+that was used to match the code, so a code matched through `ICD9CM/428.40`
+loses that entry and keeps the rest.
+
+## Names
+
+Every relationship list comes with a names list of the same length:
+`parent_names[i]` names `parent_codes[i]`.
+
+- **Codes that enrichment adds** are named by the Athena `concept_name` or the
+  pack description. LOINC Parts get their Part name.
+- **Existing entries** keep their existing name. If they have none, they get
+  one only when enrichment adds the same code itself.
+- **Null names.** These entries keep a null name:
+    - same-table parents, whose description is in their own row;
+    - tags;
+    - existing references that enrichment did not look up as a related code.
+      This includes the parent reference used to match the code, and any
+      second reference.
+
+So a dataset that keeps its own `description` still carries the official name
+of every vocabulary code that enrichment links it to. The LOINC license asks
+for this when such a table is shared: every LOINC code and Part number must
+come with its LOINC display name (Section 10.3). CSV output stores the names
+lists as JSON arrays, because names can contain `|` and can be missing.
+
+## Hierarchy and order
+
+- **Parents** are enabled by default (`--no-parent-codes` turns them off).
+  They go through the root.
+- **Children** are opt-in (`--child-codes`). They are descendants up to
+  `--child-depth` levels (default `3`, range `1` to `100`).
+- **Siblings** are opt-in (`--sibling-codes`). They are the direct children of
+  every ancestor, so they also include children of grandparents and higher
+  ancestors, without the code itself.
+
+The order of `parent_codes` after enrichment is:
+
+1. the existing entries, unchanged;
+2. the rule's vocabulary code, if a rule matched;
+3. Athena's ancestors, sorted by code (`CONCEPT_ANCESTOR` has no single path);
+4. pack ancestors not already listed, nearest first, then LOINC Parts with
+   `--loinc-hierarchy`;
+5. same-table parents from hierarchy rules.
+
+Pack children are ordered breadth first. Siblings are sorted by code.
+
+## Coverage report
+
+`suMEDS-enrich` prints a report by default (`--no-verbose` silences it).
+`suMEDS --verbose` prints it after a summary. A `tqdm` progress bar precedes
+it. For the eICU example with Athena and packs:
+
+```console
+$ uv run suMEDS-enrich eicu_demo/metadata/codes.parquet -o codes-enriched.parquet \
+    --rules eicu_rules.yaml --athena-csv /vocabularies/athena \
+    --ontology-source ../sumeds-ontologies/ontologies
+
+Enrichment report
+  Rows processed:             6,481
+  Unique codes:               6,481
+  Athena matches added:      910 rows, 910 unique codes
+  Rows with concept ID:       910 (14.0%)
+  Rows without Athena match:  5,571 (86.0%)
+  Metadata coverage (present before -> after):
+    Descriptions                     0 ->        910 (14.0%) (+910 filled)
+    Parent-code lists              860 ->      1,747 (27.0%) (+887 filled)
+    Child-code lists                 0 ->           0 (0.0%) (+0 filled)
+    Sibling-code lists               0 ->           0 (0.0%) (+0 filled)
+    Vocabulary IDs                   0 ->        910 (14.0%) (+910 filled)
+    OMOP concept IDs                 0 ->        910 (14.0%) (+910 filled)
+    Concept codes                    0 ->        910 (14.0%) (+910 filled)
+    Domains                          0 ->        910 (14.0%) (+910 filled)
+    Standard-concept flags           0 ->          50 (0.8%) (+50 filled)
+  Parent codes (all entries): 1,712 -> 5,978 (2,901 named)
+  Same-dataset parent links:  0 -> 1,365
+  Vocabulary rules (unique codes):
+    eicu-lab-loinc [crosswalk, LOINC, pack]: 50 matched, 50 validated (Athena 50, pack 0), 0 tagged
+  Hierarchy rules (same-dataset parents):
+    eicu-diagnosis-paths [separator]: 611 parents added to 611 codes
+    eicu-admission-diagnosis-paths [separator]: 0 parents added to 0 codes
+    eicu-treatment-paths [separator]: 754 parents added to 754 codes
+  Ontology files used, from ../sumeds-ontologies/ontologies:
+    crosswalk eicu/lab_loinc: 1 of 1 files (0 downloaded, 0 bytes)
+    LOINC 2.83: 28 of 99 files (0 downloaded, 0 bytes)
 ```
 
-Polars projects only the required columns. Header matching is case-insensitive.
+- **Athena matches added**, **Rows with concept ID**: rows that gained an OMOP
+  `concept_id`. The 860 diagnosis codes matched through their parent
+  reference, and the 50 lab codes through the crosswalk.
+- **Metadata coverage**: rows where each field is present, before and after.
+  Only 50 rows gain a standard-concept flag, because ICD-9-CM and ICD-10-CM
+  concepts are non-standard.
+- **Parent codes (all entries)**: list entries before and after, and how many
+  have a name.
+- **Same-dataset parent links**: parent entries that are codes of the same
+  table.
+- **Vocabulary rules**: for each ontology and crosswalk rule, how many unique
+  codes it matched, how many were validated by Athena or by a pack, and how
+  many were tagged. A rule that could not run says why:
+  `skipped (no Athena source)` or `skipped (packs disabled)`. Here Athena
+  validated all 50 LOINC
+  codes, so no code needed the pack. The pack was still read for its
+  hierarchy.
+- **Hierarchy rules**: same-table parents added per rule.
+- **Ontology files used**: the pack, hierarchy and crosswalk files read, out
+  of those available, and how many were downloaded. With the default source,
+  the header reads
+  `from rvandewater/sumeds-ontologies@v0.2.0, index sha256 pinned`.
 
-## PostgreSQL
-
-The PostgreSQL source requires `psql` on `PATH` and `concept` plus
-`concept_ancestor` in the connection's search path. Requests are sent in one
-CSV `COPY` batch rather than one query per code.
-
-```bash
-PGPASSWORD=... uv run suMEDS /data/MEDS -o summary.parquet \
-  --athena-postgres postgresql://postgres@127.0.0.1:5432/omop \
-  --child-codes --child-depth 3 --sibling-codes
-```
-
-`psql` inherits the current process environment. Supply the password as the
-standard libpq variable `PGPASSWORD`, or use `PGPASSFILE`/`~/.pgpass`.
-`POSTGRES_PASSWORD` configures the Docker container but is not read by `psql`.
-The demo notebook safely copies an existing `POSTGRES_PASSWORD` environment
-value to `PGPASSWORD` without displaying it. Restart the notebook kernel if the
-environment was changed after Jupyter started.
+The report contains counts only.
 
 ## Standalone enrichment
-
-Enrich an existing MEDS metadata table or suMEDS output without scanning event
-data:
 
 ```bash
 uv run suMEDS-enrich /data/MEDS/metadata/codes.parquet \
   -o codes-enriched.parquet --athena-csv /vocabularies/athena
 ```
 
-Parquet, CSV, JSON, JSONL, and NDJSON are supported. Input and output must be
-different paths, and the destination is replaced atomically. The CLI displays
-a `tqdm` phase-progress bar followed by row and unique-code match counts plus
-before/after coverage for descriptions, relationship codes, concept IDs,
-vocabulary, domain, and standard-concept fields.
+`suMEDS-enrich` takes the same source, hierarchy and ontology options as
+`suMEDS`. It reads and writes Parquet, CSV, JSON, JSONL and NDJSON. Input and
+output must be different paths, and the destination is replaced atomically.
+
+## Privacy ordering
+
+Integrated summary enrichment runs after rare-code masking. PostgreSQL
+receives only released code strings and the configured rare label. Masked
+source codes are not queried or restored. Pack fetching requests only
+vocabulary shards and crosswalk tables, never dataset codes. Standalone
+enrichment has no privacy filtering. Apply it only to an already approved
+table when release controls are required. See [Privacy](privacy.md).
 
 ## Interactive demo
 
 Open `examples/athena_enrichment_demo.ipynb` for a hands-on walkthrough using
 individual codes and the included MIMIC-IV demo metadata. The notebook supports
-either source and keeps the full summary step opt-in.
+either Athena source, and the full summary step is opt-in.
 
-## Example output
-
-```bash
-$ uv run suMEDS-enrich summary.parquet --athena-postgres postgresql://postgres@127.0.0.1:5432/omop -o summary_enriched.parquet
-Calculating coverage: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [02:38<00:00, 39.59s/stage]
-
-Enrichment report
-  Rows processed:             118,088
-  Unique codes:               118,088
-  Athena matches added:      65,358 rows, 65,358 unique codes
-  Rows with concept ID:       65,367 (55.4%)
-  Rows without Athena match:  52,721 (44.6%)
-  Metadata coverage (present before -> after):
-    Descriptions                     9 ->     65,367 (55.4%) (+65,358 filled)
-    Parent-code lists                9 ->     61,021 (51.7%) (+61,012 filled)
-    Vocabulary IDs                   9 ->     65,367 (55.4%) (+65,358 filled)
-    OMOP concept IDs                 9 ->     65,367 (55.4%) (+65,358 filled)
-    Concept codes                    0 ->     65,366 (55.4%) (+65,366 filled)
-    Domains                          0 ->     65,366 (55.4%) (+65,366 filled)
-    Standard-concept flags           0 ->     61,169 (51.8%) (+61,169 filled)
-```
-
-## Privacy ordering
-
-Integrated summary enrichment runs after rare-code masking. PostgreSQL receives
-only released code strings and the configured rare label; masked source codes
-are not queried or restored. Standalone enrichment has no privacy filtering and
-should be applied only to an already approved table when release controls are
-required.
+> This material contains content from LOINC (http://loinc.org). LOINC is
+> copyright © Regenstrief Institute, Inc. and the Logical Observation
+> Identifiers Names and Codes (LOINC) Committee and is available at no cost
+> under the license at http://loinc.org/license. LOINC® is a registered United
+> States trademark of Regenstrief Institute, Inc.

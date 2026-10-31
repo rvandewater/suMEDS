@@ -160,7 +160,8 @@ removes existing metadata unless you set it to `true`, which removes the parent
 reference used to match the Athena concept itself. CLI equivalents are
 `--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
 `--[no-]exclude-self-parent-code`, and `--child-depth`. See
-[Metadata enrichment](enrichment.md) for hierarchy semantics and output fields.
+[How enrichment works](enrichment.md) for the process, hierarchy semantics
+and output fields, and [Athena enrichment](athena.md) for the Athena sources.
 
 `rules` (CLI `--rules`) is resolved relative to the YAML file.
 `ontology_source` (CLI `--ontology-source`; default: the
@@ -172,10 +173,13 @@ file). `ontology_ref` (CLI `--ontology-ref`, default: the pinned release tag,
 a release tag or full commit sha prints a warning. `offline`
 (CLI `--[no-]offline`, default `false`) uses only cached or local packs.
 `packs` (CLI `--[no-]packs`, default `true`) set to `false` fetches no packs
-or crosswalk tables, so rules validate against the Athena source only.
+or crosswalk tables, so rules validate against the Athena source only and
+crosswalk rules are skipped; it needs `csv_dir` or `postgres`.
 `loinc_hierarchy` (CLI `--[no-]loinc-hierarchy`, default `false`) adds the
-LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes. See
-[Rules and ontology packs](enrichment.md#rules-and-ontology-packs).
+LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes that
+a `validate: pack` rule resolves; it has no effect with `packs: false`. See
+[Rules and ontology packs](rules.md) and
+[Athena only](athena.md#athena-only-no-packs).
 
 ## Precedence
 

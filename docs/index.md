@@ -35,4 +35,6 @@ included MIMIC-IV demo identifies itself as MEDS 0.3.3 and remains compatible
 with the fields used by this package.
 
 Start with [Usage](usage.md), then review the [privacy model](privacy.md) before
-sharing an output.
+sharing an output. [How enrichment works](enrichment.md) explains the optional
+metadata enrichment, with [Athena](athena.md) and with
+[rules and ontology packs](rules.md).

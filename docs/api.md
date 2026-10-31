@@ -98,15 +98,16 @@ enrich_metadata(
 ) -> polars.LazyFrame
 ```
 
-Adds or fills Athena fields on an arbitrary lazy metadata or summary table.
-Existing scalar values are preserved and relationship lists are merged without
-replacement.
+Adds or fills Athena and rule fields on an arbitrary lazy metadata or summary
+table with a `code` column; rows whose boolean `is_masked` is true are not
+looked up. Existing scalar values are preserved and relationship lists are
+merged without replacement. See [How enrichment works](enrichment.md).
 
 ### `load_rules(source) -> OntologyRules`
 
 Parses and strictly validates a `sumeds-rules/0.1` YAML file or mapping into
 frozen `OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. See
-[Rules and ontology packs](enrichment.md#rules-and-ontology-packs).
+[Rules and ontology packs](rules.md).
 
 ### `OntologyPacks`
 
@@ -120,8 +121,9 @@ OntologyPacks(
 )
 ```
 
-Fetches, verifies, and caches packs. `lookup(vocabulary, codes, *,
-child_depth=0, siblings=False, hierarchy=False)` returns a `PackEntry`
+Fetches, verifies, and caches packs.
+`lookup(vocabulary, codes, *, child_depth=0, siblings=False, hierarchy=False)`
+returns a `PackEntry`
 (`description`, `ancestors`, `children`, `siblings`, and their aligned
 `ancestor_names`, `child_names`, `sibling_names`) for each code present in the
 pack, fetching only the shards it needs; `hierarchy=True` adds the ancestors of
@@ -146,7 +148,8 @@ differ. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
 are necessarily eager because Polars provides no `scan_json` equivalent.
 `verbose=True` shows phase progress and prints before/after field coverage; the
 `suMEDS-enrich` CLI enables it by default. See
-[Athena enrichment](enrichment.md) for source and parsing details.
+[How enrichment works](enrichment.md) and [Athena enrichment](athena.md) for
+source and parsing details.
 
 ## Lazy building blocks
 

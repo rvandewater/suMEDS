@@ -50,8 +50,8 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--ontology-source URL_OR_DIR` | Pack repository URL, `file://` URL, or directory (default `$SUMEDS_ONTOLOGY_SOURCE`, else GitHub) |
 | `--ontology-ref REF` | Release tag of the default pack repository, `sumeds-ontologies` (default: the pinned `v0.2.0`; other refs warn) |
 | `--offline`, `--no-offline` | Use only cached or local packs (disabled by default) |
-| `--packs`, `--no-packs` | Fetch packs and crosswalk tables (enabled by default); `--no-packs` validates rule codes against Athena only |
-| `--loinc-hierarchy`, `--no-loinc-hierarchy` | Add LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes (disabled by default) |
+| `--packs`, `--no-packs` | Fetch packs and crosswalk tables (enabled by default); `--no-packs` needs an Athena source, validates rule codes against Athena only, and skips crosswalk rules |
+| `--loinc-hierarchy`, `--no-loinc-hierarchy` | Add LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes resolved by a `validate: pack` rule (disabled by default) |
 | `--verbose` | Print the enrichment coverage and rule report |
 | `--version` | Print the installed version |
 
@@ -102,7 +102,8 @@ and/or a `--rules` file validated against the public ontology packs. Use
 `suMEDS-enrich INPUT -o OUTPUT` (the same source, hierarchy, and ontology
 flags; `--no-verbose` hides its report) to enrich an existing metadata or
 summary table without running a summary. See
-[Metadata enrichment](enrichment.md).
+[How enrichment works](enrichment.md), [Athena enrichment](athena.md), and
+[Rules and ontology packs](rules.md).
 
 ## Output formats
 

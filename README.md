@@ -97,8 +97,11 @@ The standalone command shows phase progress and reports Athena matches and
 before/after metadata coverage.
 
 Both `VOCABULARY//CODE//...` and
-`VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved. See the
-[enrichment guide](docs/enrichment.md).
+`VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved, and so is a code's
+first existing parent reference (`ICD9CM/428.0`). See
+[How enrichment works](docs/enrichment.md) for the steps and a worked example,
+and [Athena enrichment](docs/athena.md) for what is read from Athena, how ICD
+parents are added, and how Athena compares with the packs.
 
 ### Rules and public ontology packs
 
@@ -144,6 +147,7 @@ Dataset crosswalk tables (for example lab item ids to LOINC) live there as well.
 Every added parent comes with its name in `parent_names`, as the LOINC license
 asks for LOINC codes; LOINC Parts as parents are opt-in (`--loinc-hierarchy`).
 With an Athena download, `--no-packs` validates rule codes against Athena only.
+See [Rules and ontology packs](docs/rules.md).
 Vocabularies that may not be redistributed or whose terms are unknown (SNOMED
 CT, CPT4, WHO ICD-10, ATC, ...) are validated only through your own Athena
 download.
