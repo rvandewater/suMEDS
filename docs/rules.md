@@ -135,11 +135,12 @@ hierarchy as its parents, nearest first. Each Part is named by its Part name in
 6. `LP29693-6` Laboratory
 7. `LP432695-7` {component}
 
-The option is off by default. It applies to LOINC codes validated by a
-`validate: pack` rule while packs are enabled. It adds parents only, no
-children or siblings. Athena already gives LOINC codes a broader set of
-ancestors through `CONCEPT_ANCESTOR` ([Athena
-hierarchy](athena.md#hierarchy-from-concept_ancestor)).
+The option is off by default. It applies to every LOINC code that is looked
+up in the LOINC pack: rule codes, built-in layouts and parent references. It
+needs a rules file and the packs; otherwise the configuration is rejected,
+because the option would add nothing. It adds parents only, no children or
+siblings. Athena already gives LOINC codes a broader set of ancestors through
+`CONCEPT_ANCESTOR` ([Athena hierarchy](athena.md#hierarchy-from-concept_ancestor)).
 
 ## Hierarchy rules
 
@@ -193,8 +194,12 @@ column and validate its codes with an ontology rule (`validate: pack`, or
 documents the format, sizes, sources, and rebuild commands, and its README
 cites the source of every crosswalk.
 
-Packs are consulted only for rule candidates. An existing parent reference
-such as `ICD9CM/428.0` is resolved through Athena only.
+Packs are consulted for rule candidates and also, in vocabularies with a pack,
+for the built-in layouts (`ICD10CM//I50.23`), the first parent reference, and
+every existing parent reference (`ICD9CM/428.0`), as Athena is. So a dataset
+whose codes already carry ICD references gets their names and ancestors from
+the packs alone. Because of this, suMEDS reads the pack index whenever packs
+are enabled and a code has a layout or a parent reference.
 
 ## Fetching, caching, offline use
 

@@ -176,8 +176,9 @@ a release tag or full commit sha prints a warning. `offline`
 or crosswalk tables, so rules validate against the Athena source only and
 crosswalk rules are skipped; it needs `csv_dir` or `postgres`.
 `loinc_hierarchy` (CLI `--[no-]loinc-hierarchy`, default `false`) adds the
-LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes that
-a `validate: pack` rule resolves; it has no effect with `packs: false`. See
+LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes looked
+up in the LOINC pack; it needs `rules` and `packs: true`, and is rejected
+otherwise. See
 [Rules and ontology packs](rules.md) and
 [Athena only](athena.md#athena-only-no-packs).
 

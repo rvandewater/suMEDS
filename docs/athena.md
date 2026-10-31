@@ -76,8 +76,9 @@ environment changed after Jupyter started.
 
 Athena receives the candidates that [How enrichment
 works](enrichment.md#how-a-code-is-enriched) lists for each code. These are
-rule codes, the built-in `VOCABULARY//CODE` layouts, and the first existing
-parent reference. A candidate matches a `CONCEPT` row with the same
+rule codes, the built-in `VOCABULARY//CODE` and `VOCABULARY/CODE` layouts, and
+the first existing parent reference. Every existing parent reference is also
+looked up in the same batch. A candidate matches a `CONCEPT` row with the same
 `vocabulary_id` and `concept_code` and an empty `invalid_reason`. Standard,
 classification and non-standard concepts all match; retired and replaced
 concepts do not. For example, the July 2026 download marks 1,849 ICD-10-CM
@@ -89,25 +90,17 @@ The comparison is exact, so the code must be in OMOP's `concept_code` format:
 - ICD codes keep their dot (`I50.23`, `428.0`, `39.61`). A dataset code such
   as `DIAGNOSIS//ICD//10//I5023` needs an [ontology rule](rules.md#rules-file)
   that inserts the dot.
-- The built-in layouts split codes on `//`. A code with a single slash, such as
-  `LOINC/2160-0`, is not a layout. Only its first parent reference is tried, and
-  if that reference is another concept (say, its LOINC Part), the code is
-  matched as that concept. Give such codes an ontology rule (below).
-- Only the first non-null parent reference is tried. In the eICU example, a
-  diagnosis code with the parents `ICD9CM/428.40` and `ICD10CM/I50.40` is
-  matched as ICD-9-CM `428.40`. Its ICD-10-CM reference is kept but not looked
-  up.
+- OMOP-style codes with single slashes (`LOINC/2160-0`, `UCUM/mg/dL`) are split
+  at their first slash.
+- The first parent reference identifies a code only when the code does not
+  name another code of the same vocabulary. `LOINC/2160-0` under
+  `LOINC/LP14355-9` is never matched as the Part, even when `2160-0` is
+  missing from your download.
 
-A rule for OMOP-style single-slash LOINC codes:
-
-```yaml
-schema: sumeds-rules/0.1
-ontology:
-  - id: omop-loinc
-    pattern: '^LOINC/(?P<code>.+)$'
-    vocabulary: LOINC
-    validate: athena
-```
+All existing parent references are looked up, not only the first. In the eICU
+example, a diagnosis code with the parents `ICD9CM/428.40` and
+`ICD10CM/I50.40` is matched as ICD-9-CM `428.40`. Both references get their
+names, and the ancestors of both are added.
 
 ## What Athena adds
 
@@ -115,10 +108,10 @@ ontology:
 |---|---|
 | `description` | `concept.concept_name`, only where `description` is null |
 | `vocabulary_id`, `concept_id`, `concept_code`, `domain_id`, `standard_concept` | the matched `concept` row, only where null |
-| `parent_codes` | ancestors from `CONCEPT_ANCESTOR`; for ICD codes, also the valid shorter codes ([below](#icd-codes)) |
+| `parent_codes` | ancestors from `CONCEPT_ANCESTOR`, of the code and of its existing parent references; for ICD codes, also the valid shorter codes ([below](#icd-codes)) |
 | `child_codes` | descendants up to `child_depth` levels (opt-in) |
 | `sibling_codes` | the direct children of every ancestor, except the code itself (opt-in) |
-| `parent_names`, `child_names`, `sibling_names` | `concept_name` of each related concept, aligned with its list |
+| `parent_names`, `child_names`, `sibling_names` | `concept_name` of each related concept, aligned with its list, including the existing parent references |
 
 Related codes are written as `VOCABULARY//CONCEPT_CODE`. A related concept must
 itself be a valid row of your `CONCEPT` file. When a code is matched through a
@@ -205,22 +198,22 @@ no children or siblings. To get them, validate the codes against the packs
 
 ## Athena with rules and packs
 
-With a rules file, Athena sees every rule candidate first. When Athena
-validates a rule's code:
+With a rules file, Athena sees every candidate first: the rule codes, the
+built-in layouts and the parent reference. When Athena validates one:
 
 - Athena's scalar fields are used: `description`, `concept_id`, `domain_id`
   and `standard_concept`.
-- `parent_codes` starts with the vocabulary code itself (`LOINC//2160-0`),
-  followed by Athena's ancestors.
-- For a `validate: pack` rule, the pack's entry for the same code is merged
-  in. Its ancestors, children and siblings are appended where Athena lacks
-  them: ICD children and siblings, and LOINC Parts with `--loinc-hierarchy`.
+- After a rule match, `parent_codes` starts with the vocabulary code itself
+  (`LOINC//2160-0`), followed by Athena's ancestors.
+- If the pack of that vocabulary has the same code, its entry is merged in.
+  Its ancestors, children and siblings are appended where Athena lacks them:
+  ICD children and siblings, and LOINC Parts with `--loinc-hierarchy`.
   Missing names are filled.
 
-A rule's code that Athena does not know falls back to the pack, or to a tag
-(see the [`validate` table](rules.md#ontology-and-crosswalk-rules)). Crosswalk
-tables always come from `sumeds-ontologies`. Athena only validates the codes
-they produce.
+A candidate that Athena does not know falls back to the pack, or to a tag
+(see the [`validate` table](rules.md#ontology-and-crosswalk-rules)). Existing
+parent references are looked up in both. Crosswalk tables always come from
+`sumeds-ontologies`. Athena only validates the codes they produce.
 
 ## Athena only: `--no-packs`
 
@@ -232,12 +225,13 @@ source. It fetches no packs and no crosswalk tables, so nothing is downloaded:
 - `validate: athena` rules behave as before.
 - Crosswalk rules are skipped, and the report says
   `skipped (packs disabled)`.
-- `--loinc-hierarchy` has no effect. Athena gives LOINC codes their ancestors
-  from `CONCEPT_ANCESTOR` instead.
+- `--loinc-hierarchy` is rejected, because it needs the packs. Athena gives
+  LOINC codes their ancestors from `CONCEPT_ANCESTOR` instead.
 
-Rule codes then get the same ICD parents as with the packs, with Athena's
-names. The results differ only where the Athena release and the pack release
-differ.
+ICD codes then get the same parents as with the packs, with Athena's names.
+The results differ only where the Athena release and the pack release differ.
+On the eICU example, packs only and Athena only give the 860 diagnosis codes
+the same `concept_code` and the same set of parents.
 
 ## Athena or packs?
 
@@ -245,7 +239,8 @@ differ.
 |---|---|---|
 | Vocabularies | every vocabulary in your download | ICD-10-CM, ICD-10-PCS, ICD-9-CM, ICD-9 procedures, LOINC |
 | Releases | those of your download (July 2026: ICD-10-CM FY2026, ICD-9 v32, LOINC 2.80) | ICD-10-CM and ICD-10-PCS FY2016 to FY2027, including retired codes; ICD-9 v32; LOINC 2.83 |
-| Codes matched | rule codes, built-in layouts, first parent reference | rule codes only |
+| Codes matched | rule codes, built-in layouts, first parent reference | the same, in vocabularies with a pack |
+| Existing parent references | named, ancestors added | named, ancestors added |
 | `concept_id`, `domain_id`, `standard_concept` | yes | no |
 | Names | `concept_name`, at most 255 characters | official descriptions; LOINC `LONG_COMMON_NAME` |
 | ICD parents | valid shorter codes | the pack's parents (identical for ICD-10-CM and ICD-9-CM) |

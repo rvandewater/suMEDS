@@ -96,9 +96,10 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
 The standalone command shows phase progress and reports Athena matches and
 before/after metadata coverage.
 
-Both `VOCABULARY//CODE//...` and
-`VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved, and so is a code's
-first existing parent reference (`ICD9CM/428.0`). See
+The `VOCABULARY//CODE//...`, `VOCABULARY//VOCABULARY_VERSION//CODE` and
+OMOP-style `VOCABULARY/CODE` layouts are resolved, and so is a code's first
+existing parent reference (`ICD9CM/428.0`). Every existing parent reference
+gets its name and its ancestors. See
 [How enrichment works](docs/enrichment.md) for the steps and a worked example,
 and [Athena enrichment](docs/athena.md) for what is read from Athena, how ICD
 parents are added, and how Athena compares with the packs.

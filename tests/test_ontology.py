@@ -1242,3 +1242,114 @@ def test_no_packs_uses_athena_only(
     assert "labs [crosswalk, LOINC, pack]: 0 matched, skipped (packs disabled)" in out
     with pytest.raises(ValueError, match="packs: false needs an Athena source"):
         EnrichmentConfig(rules=rules, packs=False)
+
+
+HIERARCHY_ONLY = {
+    "schema": "sumeds-rules/0.1",
+    "hierarchy": [
+        {
+            "id": "paths",
+            "pattern": r"^(?P<prefix>DX//)(?P<path>.+)$",
+            "group": "path",
+            "separator": "|",
+        }
+    ],
+}
+
+
+def test_packs_resolve_layouts_and_parent_references(
+    packs: Path, tmp_path: Path, capsys
+) -> None:
+    frame = pl.DataFrame(
+        {
+            "code": ["ICD10CM//I50.23", "DX//chf", "DX//chf|acute", "LOINC/2160-0"],
+            "parent_codes": [
+                None,
+                ["ICD10CM/I50.23", "ICD10CM/A04.72"],
+                ["ICD10CM/I50.23"],
+                ["LOINC/LP2-9"],
+            ],
+        }
+    )
+    rows = _enrich(frame, packs, HIERARCHY_ONLY)
+    # A VOCABULARY//CODE layout validated by the pack, without itself as parent.
+    layout = rows["ICD10CM//I50.23"]
+    assert layout["vocabulary_id"] == "ICD10CM" and layout["concept_code"] == "I50.23"
+    assert layout["description"].startswith("Acute on chronic")
+    assert layout["parent_codes"] == ["ICD10CM//I50.2", "ICD10CM//I50"]
+    # The first parent reference identifies the code, as with Athena; every
+    # reference is named and its ancestors follow, before same-table parents.
+    chf = rows["DX//chf"]
+    assert chf["concept_code"] == "I50.23"
+    assert chf["parent_codes"] == [
+        "ICD10CM/I50.23",
+        "ICD10CM/A04.72",
+        "ICD10CM//I50.2",
+        "ICD10CM//I50",
+        "ICD10CM//A04.7",
+        "ICD10CM//A04",
+    ]
+    assert chf["parent_names"][:2] == [
+        "Acute on chronic systolic (congestive) heart failure",
+        "Enterocolitis due to C. difficile, not specified as recurrent",
+    ]
+    assert None not in chf["parent_names"]
+    assert rows["DX//chf|acute"]["parent_codes"][-1] == "DX//chf"
+    # A LOINC Part reference is not a term of the pack, so it stays unnamed
+    # unless the LOINC hierarchy adds it.
+    loinc = rows["LOINC/2160-0"]
+    assert loinc["concept_code"] == "2160-0"
+    assert loinc["parent_codes"] == ["LOINC/LP2-9"]
+    assert loinc["parent_names"] == [None]
+    parts = _enrich(frame, packs, HIERARCHY_ONLY, loinc_hierarchy=True)
+    assert parts["LOINC/2160-0"]["parent_codes"] == [
+        "LOINC/LP2-9",
+        "LOINC//LP3-7",
+        "LOINC//LP1-1",
+        "LOINC//LP4-5",
+    ]
+    assert parts["LOINC/2160-0"]["parent_names"][0] == "Chemistry"
+
+    excluded = _enrich(frame, packs, HIERARCHY_ONLY, exclude_self_parent_code=True)
+    assert excluded["DX//chf"]["parent_codes"][:2] == [
+        "ICD10CM/A04.72",
+        "ICD10CM//I50.2",
+    ]
+
+    source = tmp_path / "codes.parquet"
+    frame.write_parquet(source)
+    enrich_file(
+        source,
+        tmp_path / "out.parquet",
+        EnrichmentConfig(rules=HIERARCHY_ONLY, ontology_source=str(packs)),
+        verbose=True,
+    )
+    out = capsys.readouterr().out
+    # Three distinct references; the LOINC Part is not a term of the pack.
+    assert "Existing parent references: 2 of 3 found (Athena 0, pack 2)" in out
+    assert "parent reference (unique codes): 4 validated (Athena 0, pack 4)" in out
+
+
+def test_loinc_hierarchy_needs_rules_and_packs(
+    athena_icd: Path, tmp_path: Path, capsys
+) -> None:
+    with pytest.raises(ValueError, match="loinc_hierarchy needs"):
+        EnrichmentConfig(csv_dir=athena_icd, loinc_hierarchy=True)
+    with pytest.raises(ValueError, match="loinc_hierarchy needs"):
+        EnrichmentConfig(
+            rules=LAB_RULES, csv_dir=athena_icd, packs=False, loinc_hierarchy=True
+        )
+    source = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["LAB//100//mg/dL"]}).write_parquet(source)
+    with pytest.raises(SystemExit):
+        enrich_main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out.parquet"),
+                "--athena-csv",
+                str(athena_icd),
+                "--loinc-hierarchy",
+            ]
+        )
+    assert "loinc_hierarchy needs" in capsys.readouterr().err

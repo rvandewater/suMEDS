@@ -108,6 +108,11 @@ class EnrichmentConfig:
             or not 1 <= self.child_depth <= 100
         ):
             raise ValueError("enrichment.child_depth must be an integer from 1 to 100")
+        if self.loinc_hierarchy and (self.rules is None or not self.packs):
+            raise ValueError(
+                "enrichment.loinc_hierarchy needs enrichment.rules and the ontology "
+                "packs (packs: true); without them it would add nothing"
+            )
 
     with_overrides = _with_overrides
 

@@ -692,3 +692,129 @@ def test_postgres_icd_parents_are_looked_up_once(
     assert len(calls) == 2
     assert result["parent_codes"].to_list() == [["ICD10CM//I50", "ICD10CM//I50.2"]]
     assert result["parent_names"].to_list() == [["Heart failure", "Systolic"]]
+
+
+def test_single_slash_codes_are_their_own_concept(
+    athena_csv: Path, tmp_path: Path
+) -> None:
+    frame = pl.DataFrame(
+        {
+            "code": ["SNOMED/PARENT", "SNOMED/UNKNOWN"],
+            "parent_codes": [["SNOMED/BRANCH"], ["SNOMED/BRANCH"]],
+        }
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena_csv))
+        .collect()
+        .to_dicts()
+    }
+    # OMOP-style VOCABULARY/CODE is a layout: the code is its own concept, not
+    # its first parent.
+    known = rows["SNOMED/PARENT"]
+    assert known["concept_id"] == 100 and known["description"] == "Visit parent"
+    assert known["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert known["parent_names"] == ["Branch", "Root"]
+    # A code missing from Athena is not taken for its parent of the same
+    # vocabulary; the parent is still named and its ancestors are added.
+    unknown = rows["SNOMED/UNKNOWN"]
+    assert unknown["concept_id"] is None and unknown["description"] is None
+    assert unknown["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert unknown["parent_names"] == ["Branch", "Root"]
+
+    # The same code written with its dots still identifies the code.
+    athena = _athena_icd(tmp_path / "icd")
+    row = (
+        enrich_metadata(
+            pl.LazyFrame(
+                {"code": ["ICD10CM//I5023"], "parent_codes": [["ICD10CM/I50.23"]]}
+            ),
+            EnrichmentConfig(csv_dir=athena),
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert row["concept_id"] == 3 and row["concept_code"] == "I50.23"
+
+
+def test_every_parent_reference_is_named_and_expanded(tmp_path: Path) -> None:
+    athena = _athena_icd(tmp_path / "athena")
+    frame = pl.LazyFrame(
+        {
+            "code": ["DIAGNOSIS//chf"],
+            "parent_codes": [["ICD10CM/I50.23", "ICD9Proc/84.82", "LOCAL"]],
+        }
+    )
+    row = (
+        enrich_metadata(frame, EnrichmentConfig(csv_dir=athena))
+        .collect()
+        .row(0, named=True)
+    )
+    # The first reference identifies the code; the second is a parent whose
+    # ancestors are ancestors of the code as well.
+    assert row["concept_id"] == 3
+    assert row["parent_codes"] == [
+        "ICD10CM/I50.23",
+        "ICD9Proc/84.82",
+        "LOCAL",
+        "ICD10CM//I50",
+        "ICD10CM//I50.2",
+        "ICD9Proc//84",
+        "ICD9Proc//84.8",
+    ]
+    assert row["parent_names"] == [
+        "Acute on chronic",
+        "Pedicle-based",
+        None,
+        "Heart failure",
+        "Systolic heart failure",
+        "Other musculoskeletal",
+        "Spinal devices",
+    ]
+    excluded = (
+        enrich_metadata(
+            frame, EnrichmentConfig(csv_dir=athena, exclude_self_parent_code=True)
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    # The reference used to match the code is removed and never added back.
+    assert excluded["parent_codes"] == [
+        "ICD9Proc/84.82",
+        "LOCAL",
+        "ICD10CM//I50",
+        "ICD10CM//I50.2",
+        "ICD9Proc//84",
+        "ICD9Proc//84.8",
+    ]
+
+
+def test_postgres_looks_up_references_in_the_same_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs["input"])
+        assert "\tSNOMED//BRANCH,SNOMED,BRANCH,0" in kwargs["input"]
+        stdout = (
+            "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
+            "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
+            "_related_concept_code,_related_concept_name\n"
+            "\tSNOMED//BRANCH,0,Branch,SNOMED,20,BRANCH,Visit,S,parent,SNOMED,ROOT,Root\n"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr("sumeds.enrich.subprocess.run", fake_run)
+    row = (
+        enrich_metadata(
+            pl.LazyFrame({"code": ["LOCAL"], "parent_codes": [["SNOMED/BRANCH"]]}),
+            EnrichmentConfig(postgres="postgresql://example/omop"),
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert len(calls) == 1
+    assert row["concept_id"] is None
+    assert row["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert row["parent_names"] == ["Branch", "Root"]

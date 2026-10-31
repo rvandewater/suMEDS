@@ -30,30 +30,33 @@ Two kinds of sources validate codes, alone or together:
 These combine into four setups:
 
 - **Athena only**: `--athena-csv DIR` or `--athena-postgres CONNINFO`.
-  Resolves codes in a `VOCABULARY//CODE` layout, and codes whose first
-  existing parent is a vocabulary reference.
-- **Packs only**: `--rules rules.yaml`. Resolves codes that a rule maps to a
-  pack vocabulary, directly or through a crosswalk table.
+  Resolves codes in a `VOCABULARY//CODE` or `VOCABULARY/CODE` layout, and
+  codes whose first existing parent is a vocabulary reference.
+- **Packs only**: `--rules rules.yaml`. Resolves the same codes for the
+  vocabularies that have a pack, and codes that a rule maps to a pack
+  vocabulary, directly or through a crosswalk table.
 - **Athena and packs**: `--rules rules.yaml --athena-csv DIR`. Resolves both
   of the above. Athena's fields win, and the pack hierarchy is merged in.
 - **Athena, no packs**: `--rules rules.yaml --athena-csv DIR --no-packs`.
-  Validates rule codes against Athena only. Nothing is downloaded, and
+  Validates every candidate against Athena only. Nothing is downloaded, and
   crosswalk rules are skipped.
 
 With neither an Athena source nor a rules file, there is no enrichment.
 
 ## How a code is enriched
 
-Enrichment works on the unique codes of the table, in eight steps.
+Enrichment works on the unique codes of the table, in nine steps.
 
 ```text
 code
   │  candidates, best first: ontology rules, crosswalk rules,
   │  VOCABULARY//CODE, VOCABULARY//VERSION//CODE, first parent
   ▼
-validation: Athena CONCEPT, a pack (validate: pack), or a tag
+validation: Athena CONCEPT, a pack, or a tag (validate: none)
   ▼
-best match ─► fields, hierarchy and names ─► same-table parents
+best match ─► fields, hierarchy and names
+  ▼
+existing parent references: names and ancestors ─► same-table parents
   ▼
 merge into the table, overwriting nothing
 ```
@@ -67,21 +70,29 @@ merge into the table, overwriting nothing
        in file order: the rule's `code` group after `normalize`;
     2. every matching crosswalk rule, in file order: the table's codes for the
        matched key;
-    3. `VOCABULARY//CODE//...`: the first two components of the code;
+    3. `VOCABULARY//CODE//...`: the first two components of the code, or
+       `VOCABULARY/CODE` for a code with single slashes only (OMOP-style
+       `LOINC/2160-0`), split at its first slash;
     4. `VOCABULARY//VERSION//CODE`: the first and third components of a
        three-part code;
     5. the first non-null existing `parent_codes` entry, read as
-       `VOCABULARY/CODE` or `VOCABULARY//CODE`.
+       `VOCABULARY/CODE` or `VOCABULARY//CODE`, unless it names another code of
+       the code's own vocabulary.
 
     Rules come from the rules file. The last three layouts are built in.
     Trying the second component before the third keeps codes that end in
     markers such as `//start` and `//end` matched on their second component.
-    The original code is never changed.
+    A parent reference in the code's own vocabulary is a parent, not the code:
+    `LOINC/2160-0` under `LOINC/LP14355-9` is never matched as the Part. The
+    same code written with its dots still counts as the code, so
+    `ICD10CM//I5023` under `ICD10CM/I50.23` is matched as `I50.23`. The
+    original code is never changed.
 
 3. **Validate.** With Athena, every candidate is looked up in `CONCEPT` in one
-   batch (valid concepts only). Codes from `validate: pack` rules are looked
-   up in the pack of the rule's vocabulary, unless `--no-packs` is set. A
-   `validate: none` rule tags its code without validation. A
+   batch (valid concepts only). With packs, every candidate whose vocabulary
+   has a pack is looked up in it: the codes of `validate: pack` rules, the
+   built-in layouts, and the parent reference. `--no-packs` turns the packs
+   off. A `validate: none` rule tags its code without validation. A
    `validate: athena` rule needs Athena.
 
 4. **Pick one match per code.** The best-ranked candidate that validates wins.
@@ -102,13 +113,19 @@ merge into the table, overwriting nothing
     siblings are added when enabled. Each added code's name goes into the
     aligned names list (`parent_names` and so on).
 
-6. **Add same-table parents.** [Hierarchy rules](rules.md#hierarchy-rules)
+6. **Look up existing parent references.** Every existing `parent_codes`
+   entry that names a vocabulary code (`ICD10CM/I50.40`, not only the first)
+   is looked up in Athena and in the packs. It keeps its place in the list
+   and gets its name in `parent_names`. Its ancestors are ancestors of the
+   code too, so they are appended as parents.
+
+7. **Add same-table parents.** [Hierarchy rules](rules.md#hierarchy-rules)
    append parents that are codes of the same table.
 
-7. **Merge.** Results are merged into the table without overwriting
+8. **Merge.** Results are merged into the table without overwriting
    anything; see [Merge rules](#merge-rules).
 
-8. **Report.** Counts only; see [Coverage report](#coverage-report).
+9. **Report.** Counts only; see [Coverage report](#coverage-report).
 
 ## Worked example
 
@@ -137,35 +154,40 @@ and has no parents. Only the crosswalk rule can resolve it: the key
 
 **A diagnosis code**,
 `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure|combined systolic and diastolic`,
-has the existing parents `ICD9CM/428.40` and `ICD10CM/I50.40`.
+has the existing parents `ICD9CM/428.40` and `ICD10CM/I50.40`. `DIAGNOSIS` is
+not a vocabulary, so the first parent reference identifies the code. Every
+setup gives it the same result:
 
-- **Athena:** `DIAGNOSIS` is not a vocabulary, so the first parent reference,
-  `ICD9CM/428.40`, is matched. The code gets that concept's name as its
-  description ("Combined systolic and diastolic heart failure, unspecified"),
-  its `concept_id` 44832381, and `domain_id` Observation. After the two
-  existing entries, the parents `ICD9CM//428` (Heart failure) and
-  `ICD9CM//428.4` (Combined systolic and diastolic heart failure) are
-  appended.
-- **Rules:** the separator hierarchy rule also appends the same-table parent
-  `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure`.
-  This holds in every setup with the rules file.
-- **Packs only:** only the same-table parent. Packs are queried for rule
-  candidates, not for existing parent references.
+- The description is that concept's name, "Combined systolic and diastolic
+  heart failure, unspecified", with `vocabulary_id` ICD9CM and `concept_code`
+  428.40. With Athena, it also gets `concept_id` 44832381 and `domain_id`
+  Observation.
+- Both existing references keep their place and get their names.
+- Their ancestors are appended: `ICD9CM//428.4` (Combined systolic and
+  diastolic heart failure), `ICD9CM//428` (Heart failure), `ICD10CM//I50.4`
+  (Combined systolic (congestive) and diastolic (congestive) heart failure)
+  and `ICD10CM//I50` (Heart failure). Athena sorts each reference's ancestors
+  by code; the packs list them nearest first.
+- With the rules file, the separator hierarchy rule appends the same-table
+  parent `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure`.
 
 All setups on the whole table, as unique codes and parent-list entries (1,712
 entries before enrichment):
 
 | Setup | Described | With `concept_id` | Parent entries | Named | Same-table parents |
 |---|---:|---:|---:|---:|---:|
-| Packs | 50 | 0 | 3,127 | 50 | 1,365 |
-| Packs and LOINC Parts | 50 | 0 | 3,469 | 392 | 1,365 |
-| Athena only (no rules) | 860 | 860 | 2,860 | 1,148 | 0 |
-| Athena and packs | 910 | 910 | 5,978 | 2,901 | 1,365 |
-| Athena, no packs | 860 | 860 | 4,225 | 1,148 | 1,365 |
+| Packs | 910 | 0 | 5,369 | 4,004 | 1,365 |
+| Packs and LOINC Parts | 910 | 0 | 5,711 | 4,346 | 1,365 |
+| Athena only (no rules) | 860 | 860 | 3,954 | 3,954 | 0 |
+| Athena and packs | 910 | 910 | 7,072 | 5,707 | 1,365 |
+| Athena, no packs | 860 | 860 | 5,319 | 3,954 | 1,365 |
 
-Every entry that enrichment adds from a vocabulary is named. The unnamed
-entries are the 1,712 existing references and the same-table parents (see
-[Names](#names)).
+Every vocabulary code in a parent list is named: the only unnamed entries are
+the same-table parents, whose descriptions are in their own rows. For the 860
+diagnosis codes, packs only and Athena only agree: the same `concept_code` for
+all 860, the same set of parents for all 943 codes with parents, and the same
+description for 856. The 4 that differ are ICD-9-CM categories whose NCHS
+wording differs from Athena's.
 
 ## Output fields
 
@@ -217,13 +239,12 @@ Every relationship list comes with a names list of the same length:
 - **Codes that enrichment adds** are named by the Athena `concept_name` or the
   pack description. LOINC Parts get their Part name.
 - **Existing entries** keep their existing name. If they have none, they get
-  one only when enrichment adds the same code itself.
-- **Null names.** These entries keep a null name:
+  the name of the code they reference, when Athena or a pack knows it.
+- **Null names** remain for:
     - same-table parents, whose description is in their own row;
     - tags;
-    - existing references that enrichment did not look up as a related code.
-      This includes the parent reference used to match the code, and any
-      second reference.
+    - references that neither Athena nor a pack knows, such as a LOINC Part
+      reference without Athena, since the LOINC pack holds terms, not Parts.
 
 So a dataset that keeps its own `description` still carries the official name
 of every vocabulary code that enrichment links it to. The LOINC license asks
@@ -248,7 +269,8 @@ The order of `parent_codes` after enrichment is:
 3. Athena's ancestors, sorted by code (`CONCEPT_ANCESTOR` has no single path);
 4. pack ancestors not already listed, nearest first, then LOINC Parts with
    `--loinc-hierarchy`;
-5. same-table parents from hierarchy rules.
+5. the ancestors of the existing parent references, not already listed;
+6. same-table parents from hierarchy rules.
 
 Pack children are ordered breadth first. Siblings are sorted by code.
 
@@ -279,16 +301,20 @@ Enrichment report
     Concept codes                    0 ->        910 (14.0%) (+910 filled)
     Domains                          0 ->        910 (14.0%) (+910 filled)
     Standard-concept flags           0 ->          50 (0.8%) (+50 filled)
-  Parent codes (all entries): 1,712 -> 5,978 (2,901 named)
+  Parent codes (all entries): 1,712 -> 7,072 (5,707 named)
   Same-dataset parent links:  0 -> 1,365
+  Existing parent references: 832 of 832 found (Athena 832, pack 832)
   Vocabulary rules (unique codes):
     eicu-lab-loinc [crosswalk, LOINC, pack]: 50 matched, 50 validated (Athena 50, pack 0), 0 tagged
+  Built-in layouts and parent reference (unique codes): 860 validated (Athena 860, pack 0)
   Hierarchy rules (same-dataset parents):
     eicu-diagnosis-paths [separator]: 611 parents added to 611 codes
     eicu-admission-diagnosis-paths [separator]: 0 parents added to 0 codes
     eicu-treatment-paths [separator]: 754 parents added to 754 codes
   Ontology files used, from ../sumeds-ontologies/ontologies:
     crosswalk eicu/lab_loinc: 1 of 1 files (0 downloaded, 0 bytes)
+    ICD10CM fy2016-fy2027: 18 of 26 files (0 downloaded, 0 bytes)
+    ICD9CM v32: 11 of 12 files (0 downloaded, 0 bytes)
     LOINC 2.83: 28 of 99 files (0 downloaded, 0 bytes)
 ```
 
@@ -302,13 +328,17 @@ Enrichment report
   have a name.
 - **Same-dataset parent links**: parent entries that are codes of the same
   table.
+- **Existing parent references**: distinct vocabulary references among the
+  existing parents, how many were found, and in which source. Here Athena and
+  the packs both know all 832.
 - **Vocabulary rules**: for each ontology and crosswalk rule, how many unique
   codes it matched, how many were validated by Athena or by a pack, and how
   many were tagged. A rule that could not run says why:
   `skipped (no Athena source)` or `skipped (packs disabled)`. Here Athena
-  validated all 50 LOINC
-  codes, so no code needed the pack. The pack was still read for its
-  hierarchy.
+  validated all 50 LOINC codes, so no code needed the pack. The pack was still
+  read for its hierarchy.
+- **Built-in layouts and parent reference**: codes that no rule matched but a
+  built-in layout or the first parent reference did, by source.
 - **Hierarchy rules**: same-table parents added per rule.
 - **Ontology files used**: the pack, hierarchy and crosswalk files read, out
   of those available, and how many were downloaded. With the default source,

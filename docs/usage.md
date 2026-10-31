@@ -51,7 +51,7 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--ontology-ref REF` | Release tag of the default pack repository, `sumeds-ontologies` (default: the pinned `v0.2.0`; other refs warn) |
 | `--offline`, `--no-offline` | Use only cached or local packs (disabled by default) |
 | `--packs`, `--no-packs` | Fetch packs and crosswalk tables (enabled by default); `--no-packs` needs an Athena source, validates rule codes against Athena only, and skips crosswalk rules |
-| `--loinc-hierarchy`, `--no-loinc-hierarchy` | Add LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes resolved by a `validate: pack` rule (disabled by default) |
+| `--loinc-hierarchy`, `--no-loinc-hierarchy` | Add LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes looked up in the LOINC pack; needs `--rules` and packs (disabled by default) |
 | `--verbose` | Print the enrichment coverage and rule report |
 | `--version` | Print the installed version |
 
