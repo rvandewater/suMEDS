@@ -23,6 +23,7 @@ For each valid Athena match, suMEDS adds or fills:
 | `parent_codes` | list[string] | all valid ancestors through the root (default) |
 | `child_codes` | list[string] | valid descendants up to `child_depth` (optional) |
 | `sibling_codes` | list[string] | valid direct children of every ancestor, excluding self (optional) |
+| `parent_names`, `child_names`, `sibling_names` | list[string] | the name of each entry of the list beside it, aligned entry by entry; null where no name is known |
 | `vocabulary_id` | string | `concept.vocabulary_id` |
 | `concept_id` | int64 | numeric OMOP concept identifier |
 | `concept_code` | string | vocabulary-local code |
@@ -42,8 +43,23 @@ Invalid, missing, self-referential, and cyclic hierarchy rows are ignored.
 Unmatched concepts pass through unchanged.
 Please check the [Athena search portal](https://athena.ohdsi.org/search-terms/start) to confirm.
 
+Every relationship list comes with a names list of the same length:
+`parent_names[i]` names `parent_codes[i]` (the Athena `concept_name` or the
+pack description of that code, the LOINC Part name for a LOINC Part). Existing
+entries keep an existing name and otherwise get the name of the code they
+reference, so a dataset that keeps its own `description` still carries the
+official name of every vocabulary code it is linked to. The LOINC license
+requires this when such a table is shared: every LOINC code and Part number
+must come with its LOINC display name (Section 10.3). CSV output stores the
+names lists as JSON arrays, because names can contain `|` and can be missing.
+
 Parent expansion includes every positive `min_levels_of_separation` through the
-root and is enabled by default. Disable it with `--no-parent-codes` or
+root and is enabled by default. OMOP keeps the ICD hierarchy (ICD-10-CM,
+ICD-10-PCS, ICD-9-CM, ICD-9 procedures) only as `Is a` relationships, not in
+`CONCEPT_ANCESTOR`, so for these vocabularies suMEDS adds every valid shorter
+code of the same vocabulary as a parent (`I50.23` gets `I50.2` and `I50`).
+For ICD-10-CM and ICD-9-CM this equals Athena's transitive `Is a` hierarchy;
+for ICD-9 procedures it adds the shorter codes that Athena's `Is a` links lack. Disable it with `--no-parent-codes` or
 `parent_codes: false`. Child and sibling expansion are opt-in. Children include
 transitive descendants through `child_depth` (default `3`); siblings are the
 direct children of each valid ancestor, excluding the matched concept itself.
@@ -124,8 +140,8 @@ A validated code gets `description` (only where null), `vocabulary_id` and
 the root, as `VOCABULARY//CODE` (pack ancestors nearest first). `child_codes`
 and `sibling_codes` follow the same options and semantics as for Athena. When
 Athena validates a rule's code, Athena's scalar fields win and the pack's
-hierarchy is merged in, because Athena's `CONCEPT_ANCESTOR` has no hierarchy
-for non-standard vocabularies such as ICD-10-CM. A tag (`validate: none`) adds
+hierarchy is merged in (for ICD both give the same parents). A tag
+(`validate: none`) adds
 only the vocabulary code to `parent_codes`, with no description. A `pack` rule
 for a vocabulary without a pack fails with the list of available packs; codes
 missing from the pack or from Athena get nothing, so no dangling code is added.
@@ -134,6 +150,22 @@ is a vocabulary reference (OMOP-style `ICD10PCS//0DTJ4ZZ` or
 `ICD10PCS/0DTJ4ZZ`), its rule's vocabulary code is not added as its parent.
 If a crosswalk key maps to several codes, Athena keeps the lowest concept id,
 a pack the first code in sort order, and a tag lists them all.
+
+**LOINC Parts as parents** are opt-in: `--loinc-hierarchy`
+(`loinc_hierarchy: true`) adds every LOINC Part on a LOINC code's paths in the
+LOINC multiaxial hierarchy (ComponentHierarchyBySystem) from the LOINC pack,
+nearest first, each named by its Part name in `parent_names`; e.g. `2160-0`
+gets `LP385359-7` (Creatinine | Serum or Plasma | Chemistry - non-challenge),
+`LP14355-9` (Creatinine), `LP31398-8` (Renal function) and so on up to the
+root. Athena already gives LOINC codes their LOINC ancestors through
+`CONCEPT_ANCESTOR`.
+
+**Athena only.** `--no-packs` (`packs: false`, which needs an Athena source)
+fetches no packs or crosswalk tables: rules validate their codes against Athena
+only, whatever their `validate` mode, and crosswalk rules are skipped. With the
+ICD parents above, an Athena download then validates the same codes and gives
+the same ICD parents as the packs, with Athena's names and apart from release
+differences; crosswalk tables exist only in `sumeds-ontologies`.
 
 **Hierarchy rules** add parents that are codes of the same (released) table,
 appended after the vocabulary parents, so the first parent stays the
@@ -164,8 +196,8 @@ filled only where null, and relationship lists are merged without duplicates.
 | `ICD10CM` | `fy2016-fy2027` | 99,085 | CDC/NCHS order files, FY2016 to FY2027 (retired codes kept, with `first_year`/`last_year`) | no license agreement; adapts WHO's ICD-10 |
 | `ICD10PCS` | `fy2016-fy2027` | 197,789 | CMS order files and code tables, FY2016 to FY2027, including every 1- to 6-character prefix described from the tables' axis labels | no license agreement; no WHO content |
 | `ICD9CM` | `v32` | 17,541 | CMS v32 (final) plus NCHS FY2012 tabular headers | no license agreement; adapts WHO's ICD-9 |
-| `ICD9Proc` | `v32` | 4,648 | as ICD9CM | no license agreement; adapts WHO's ICD-9 |
-| `LOINC` | `2.83` | 105,050 | LOINC Table Core 2.83, original fields unchanged, all statuses, `MapTo.csv` | LOINC license |
+| `ICD9Proc` | `v32` | 4,650 | as ICD9CM | no license agreement; adapts WHO's ICD-9 |
+| `LOINC` | `2.83` | 105,050 | LOINC Table Core 2.83, original fields unchanged, all statuses, `MapTo.csv`; the ComponentHierarchyBySystem rows of these terms and their Parts | LOINC license |
 
 Codes use the OMOP `concept_code` format (`I50.23`, `401.9`, `39.61`,
 `0DTJ4ZZ`, `2160-0`), so rules normalize dataset codes to it. ICD-10-PCS
@@ -181,7 +213,7 @@ codes of SICdb or PICdb, can drop ETL-side well-formedness checks of that
 column and validate its codes with an ontology rule (`validate: pack`, or
 `athena`). The packs, crosswalks and their builder live in the separately
 versioned data repository [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies); its
-[pack README](https://github.com/rvandewater/sumeds-ontologies/tree/v0.1.0/ontologies) documents the format, sizes, sources,
+[pack README](https://github.com/rvandewater/sumeds-ontologies/tree/v0.2.0/ontologies) documents the format, sizes, sources,
 and rebuild commands.
 
 ### Fetching, caching, offline use
@@ -196,7 +228,7 @@ source is, in order of precedence:
 3. `https://raw.githubusercontent.com/rvandewater/sumeds-ontologies/<ref>/ontologies`,
    with `<ref>` from `--ontology-ref` or `enrichment.ontology_ref`.
 
-The default `<ref>` is a release tag of `sumeds-ontologies` (`v0.1.0` in this
+The default `<ref>` is a release tag of `sumeds-ontologies` (`v0.2.0` in this
 suMEDS version), and suMEDS pins the sha256 of that release's `index.json`.
 Because the index pins every manifest and each manifest every shard, the
 default enrichment is reproducible byte for byte: if the tag were ever moved,

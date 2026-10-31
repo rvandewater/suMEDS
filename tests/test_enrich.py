@@ -346,18 +346,19 @@ def test_postgres_uses_batched_copy(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "h.min_levels_of_separation <= 2" in kwargs["input"]
         assert "child_h.min_levels_of_separation = 1" in kwargs["input"]
         assert "'sibling'::text" in kwargs["input"]
+        assert "related.concept_name AS _related_concept_name" in kwargs["input"]
         stdout = (
             "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
             "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
-            "_related_concept_code\n"
+            "_related_concept_code,_related_concept_name\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,parent,SNOMED,PARENT\n"
+            "Visit,,parent,SNOMED,PARENT,Parent concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,parent,SNOMED,PARENT\n"
+            "Visit,,parent,SNOMED,PARENT,Parent concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,child,SNOMED,CHILD1\n"
+            "Visit,,child,SNOMED,CHILD1,Child concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,sibling,SNOMED,SIB\n"
+            "Visit,,sibling,SNOMED,SIB,\n"
         )
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -377,6 +378,9 @@ def test_postgres_uses_batched_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["parent_codes"].to_list() == [["SNOMED//PARENT"]]
     assert result["child_codes"].to_list() == [["SNOMED//CHILD1"]]
     assert result["sibling_codes"].to_list() == [["SNOMED//SIB"]]
+    assert result["parent_names"].to_list() == [["Parent concept"]]
+    assert result["child_names"].to_list() == [["Child concept"]]
+    assert result["sibling_names"].to_list() == [[None]]
 
 
 def test_postgres_parent_toggle_preserves_unmatched_metadata(
@@ -389,8 +393,8 @@ def test_postgres_parent_toggle_preserves_unmatched_metadata(
         stdout = (
             "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
             "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
-            "_related_concept_code\n"
-            "SNOMED//ROOT,0,Root,SNOMED,10,ROOT,Visit,S,,,\n"
+            "_related_concept_code,_related_concept_name\n"
+            "SNOMED//ROOT,0,Root,SNOMED,10,ROOT,Visit,S,,,,\n"
         )
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -597,3 +601,94 @@ def test_self_parent_exclusion_skips_leading_null(athena_csv: Path) -> None:
 
     assert row["concept_id"] == 100
     assert row["parent_codes"] == ["KEEP", "SNOMED//BRANCH", "SNOMED//ROOT"]
+
+
+def _athena_icd(directory: Path) -> Path:
+    directory.mkdir()
+    concepts = [
+        (1, "Heart failure", "Condition", "ICD10CM", "I50", None, None),
+        (2, "Systolic heart failure", "Condition", "ICD10CM", "I50.2", None, None),
+        (3, "Acute on chronic", "Condition", "ICD10CM", "I50.23", None, None),
+        (4, "Retired header", "Condition", "ICD10CM", "I50.9", None, "D"),
+        (5, "Spinal devices", "Procedure", "ICD9Proc", "84.8", None, None),
+        (6, "Other musculoskeletal", "Procedure", "ICD9Proc", "84", None, None),
+        (7, "Pedicle-based", "Procedure", "ICD9Proc", "84.82", None, None),
+    ]
+    pl.DataFrame(
+        concepts,
+        schema=[
+            "concept_id",
+            "concept_name",
+            "domain_id",
+            "vocabulary_id",
+            "concept_code",
+            "standard_concept",
+            "invalid_reason",
+        ],
+        orient="row",
+    ).write_csv(directory / "CONCEPT.csv", separator="\t")
+    pl.DataFrame(
+        schema={
+            "ancestor_concept_id": pl.Int64,
+            "descendant_concept_id": pl.Int64,
+            "min_levels_of_separation": pl.Int64,
+        }
+    ).write_csv(directory / "CONCEPT_ANCESTOR.csv", separator="\t")
+    return directory
+
+
+def test_athena_icd_parents_are_the_valid_shorter_codes(tmp_path: Path) -> None:
+    athena = _athena_icd(tmp_path / "athena")
+    frame = pl.DataFrame(
+        {"code": ["ICD10CM//I50.23", "ICD9Proc//84.82", "ICD10CM//I50"]}
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena))
+        .collect()
+        .to_dicts()
+    }
+    assert rows["ICD10CM//I50.23"]["parent_codes"] == ["ICD10CM//I50", "ICD10CM//I50.2"]
+    assert rows["ICD10CM//I50.23"]["parent_names"] == [
+        "Heart failure",
+        "Systolic heart failure",
+    ]
+    assert rows["ICD9Proc//84.82"]["parent_codes"] == ["ICD9Proc//84", "ICD9Proc//84.8"]
+    assert rows["ICD10CM//I50"]["parent_codes"] is None
+    off = enrich_metadata(
+        frame.lazy(), EnrichmentConfig(csv_dir=athena, parent_codes=False)
+    ).collect()
+    assert "parent_codes" not in off.columns
+
+
+def test_postgres_icd_parents_are_looked_up_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs["input"])
+        header = (
+            "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
+            "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
+            "_related_concept_code,_related_concept_name\n"
+        )
+        if len(calls) == 1:
+            body = "ICD10CM//I50.23,0,Acute,ICD10CM,3,I50.23,Condition,,,,,\n"
+        else:
+            assert "ICD10CM//I50.2,ICD10CM,I50.2,0" in kwargs["input"]
+            assert "'parent'::text" not in kwargs["input"]
+            body = (
+                "ICD10CM//I50.2,0,Systolic,ICD10CM,2,I50.2,Condition,,,,,\n"
+                "ICD10CM//I50,0,Heart failure,ICD10CM,1,I50,Condition,,,,,\n"
+            )
+        return subprocess.CompletedProcess(command, 0, header + body, "")
+
+    monkeypatch.setattr("sumeds.enrich.subprocess.run", fake_run)
+    result = enrich_metadata(
+        pl.DataFrame({"code": ["ICD10CM//I50.23"]}).lazy(),
+        EnrichmentConfig(postgres="postgresql://example/omop"),
+    ).collect()
+    assert len(calls) == 2
+    assert result["parent_codes"].to_list() == [["ICD10CM//I50", "ICD10CM//I50.2"]]
+    assert result["parent_names"].to_list() == [["Heart failure", "Systolic"]]

@@ -34,7 +34,7 @@ INDEX_SCHEMA = "sumeds-ontologies/0.1"
 PACK_SCHEMA = "sumeds-ontology-pack/0.1"
 CROSSWALK_SCHEMA = "sumeds-crosswalk/0.1"
 DATA_REPOSITORY = "rvandewater/sumeds-ontologies"
-DEFAULT_REF = "v0.1.0"
+DEFAULT_REF = "v0.2.0"
 DEFAULT_SOURCE = (
     "https://raw.githubusercontent.com/" + DATA_REPOSITORY + "/{ref}/ontologies"
 )
@@ -42,7 +42,7 @@ DEFAULT_SOURCE = (
 # manifest every shard, so this digest pins all default content: a moved tag
 # fails loudly instead of silently changing enrichment results.
 DEFAULT_INDEX_SHA256 = (
-    "d264e222ae07473fc0f60cbcea059e385e3ef61a2567060f19be4b26d139d695"
+    "fd7722cee708e7e638cf958ddb5f7ed73b5403391069d59bc17861c2336d33c9"
 )
 _RELEASE_REF = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$|^[0-9a-f]{40}$")
 SOURCE_ENV = "SUMEDS_ONTOLOGY_SOURCE"
@@ -457,13 +457,20 @@ def resolve_source(source: str | None = None, ref: str = DEFAULT_REF) -> str:
 
 @dataclass(frozen=True)
 class PackEntry:
-    """A validated vocabulary code with its pack hierarchy (raw codes)."""
+    """A validated vocabulary code with its pack hierarchy (raw codes).
+
+    ``ancestor_names``, ``child_names`` and ``sibling_names`` hold the
+    description of each related code, aligned with its tuple.
+    """
 
     code: str
     description: str | None
     ancestors: tuple[str, ...]
     children: tuple[str, ...] = ()
     siblings: tuple[str, ...] = ()
+    ancestor_names: tuple[str | None, ...] = ()
+    child_names: tuple[str | None, ...] = ()
+    sibling_names: tuple[str | None, ...] = ()
 
 
 class OntologyPacks:
@@ -518,6 +525,9 @@ class OntologyPacks:
         self._rows: dict[str, dict[str, tuple[str | None, str | None]]] = {}
         self._loaded: dict[str, set[str]] = {}
         self._crosswalks: dict[str, dict[str, Any]] = {}
+        # Hierarchy rows per vocabulary: code -> [(path to root, code text)].
+        self._paths: dict[str, dict[str, list[tuple[str, str]]]] = {}
+        self._path_shards: dict[str, set[str]] = {}
 
     def describe(self) -> str:
         """Where packs come from, e.g. ``rvandewater/sumeds-ontologies@v0.1.0``."""
@@ -544,11 +554,14 @@ class OntologyPacks:
         *,
         child_depth: int = 0,
         siblings: bool = False,
+        hierarchy: bool = False,
     ) -> dict[str, PackEntry]:
         """Return pack entries for the ``codes`` present in the pack.
 
         Only the shards these codes, their ancestors, and (when requested) their
-        descendants or siblings live in are fetched.
+        descendants or siblings live in are fetched. ``hierarchy`` adds the
+        ancestors of a pack's separate hierarchy (the LOINC Parts on a term's
+        paths in the LOINC multiaxial hierarchy), named by their code text.
         """
 
         directory, manifest = self._manifest(vocabulary)
@@ -579,17 +592,23 @@ class OntologyPacks:
             for values in children.values():
                 values.sort()
         path = manifest.get("description_path")
+
+        def describe(item: str) -> str | None:
+            if item not in rows:
+                return None
+            description = rows[item][0]
+            if path and len(item) <= path["max_code_length"]:
+                lineage = (*reversed(self._ancestors(rows, item)), item)
+                labels = [rows[value][0] for value in lineage]
+                description = path["separator"].join(label for label in labels if label)
+            return description or None
+
+        parts = self._hierarchy(vocabulary, found) if hierarchy else {}
         entries = {}
         for code in sorted(found):
             ancestors = self._ancestors(rows, code)
-            description = rows[code][0]
-            if path and len(code) <= path["max_code_length"]:
-                labels = [rows[item][0] for item in (*reversed(ancestors), code)]
-                description = path["separator"].join(label for label in labels if label)
-            entries[code] = PackEntry(
-                code,
-                description or None,
-                tuple(ancestors),
+            extra = [item for item in parts.get(code, ()) if item[0] not in ancestors]
+            related = (
                 tuple(_descendants(children, code, child_depth)),
                 tuple(
                     sorted(
@@ -603,6 +622,18 @@ class OntologyPacks:
                 )
                 if siblings
                 else (),
+            )
+            entries[code] = PackEntry(
+                code,
+                describe(code),
+                (*ancestors, *(part for part, _ in extra)),
+                *related,
+                ancestor_names=(
+                    *(describe(item) for item in ancestors),
+                    *(name for _, name in extra),
+                ),
+                child_names=tuple(describe(item) for item in related[0]),
+                sibling_names=tuple(describe(item) for item in related[1]),
             )
         return entries
 
@@ -643,6 +674,79 @@ class OntologyPacks:
         stats["shards"] = 1
         stats["bytes"] += len(data) if stats["downloaded"] > before else 0
         return list(_csv_reader(data, info["file"]))
+
+    def _hierarchy(
+        self, vocabulary: str, codes: set[str]
+    ) -> dict[str, list[tuple[str, str | None]]]:
+        """Ancestors of ``codes`` in the pack's hierarchy, nearest first, named.
+
+        A code's rows give its full paths to the root, so only the shards of the
+        codes and of the ancestors (for their names) are fetched.
+        """
+
+        _, manifest = self._manifest(vocabulary)
+        info = manifest.get("hierarchy")
+        if not info or not codes:
+            return {}
+        separator = info["path_separator"]
+        self._load_paths(vocabulary, codes)
+        paths = self._paths[vocabulary]
+        found: dict[str, list[str]] = {}
+        for code in codes:
+            ancestors = found.setdefault(code, [])
+            for route, _ in paths.get(code, ()):
+                for ancestor in reversed(route.split(separator) if route else []):
+                    if ancestor and ancestor != code and ancestor not in ancestors:
+                        ancestors.append(ancestor)
+        self._load_paths(
+            vocabulary, {item for values in found.values() for item in values}
+        )
+
+        def name(item: str) -> str | None:
+            rows = paths.get(item)
+            return (rows[0][1] or None) if rows else None
+
+        return {
+            code: [(item, name(item)) for item in values]
+            for code, values in found.items()
+            if values
+        }
+
+    def _load_paths(self, vocabulary: str, codes: set[str]) -> None:
+        directory, manifest = self._manifest(vocabulary)
+        info = manifest["hierarchy"]
+        length = info["shard_key_length"]
+        loaded = self._path_shards.setdefault(vocabulary, set())
+        paths = self._paths.setdefault(vocabulary, {})
+        label = f"{vocabulary} hierarchy"
+        stats = self.stats.setdefault(
+            label,
+            {
+                "release": manifest.get("release"),
+                "shards": 0,
+                "available": len(info["shards"]),
+                "downloaded": 0,
+                "bytes": 0,
+            },
+        )
+        columns = {info["code_column"], info["path_column"], "CODE_TEXT"}
+        for key in sorted({code[:length] for code in codes} - loaded):
+            loaded.add(key)
+            shard = info["shards"].get(key)
+            if shard is None:
+                continue
+            relative = f"{directory}/{info['directory']}/{shard['file']}"
+            before = stats["downloaded"]
+            data = self._get(relative, shard.get("sha256"), stats=stats)
+            stats["shards"] += 1
+            stats["bytes"] += len(data) if stats["downloaded"] > before else 0
+            reader = _csv_reader(data, shard["file"])
+            if not columns <= set(reader.fieldnames or ()):
+                raise OntologyPackError(f"{relative} lacks columns {sorted(columns)}")
+            for row in reader:
+                paths.setdefault(row[info["code_column"]], []).append(
+                    (row[info["path_column"]], row["CODE_TEXT"])
+                )
 
     # ------------------------------------------------------------------ fetch
 
@@ -695,6 +799,23 @@ class OntologyPacks:
             for shard in shards.values():
                 if not _SAFE_NAME.match(str(shard.get("file", ""))):
                     raise OntologyPackError(f"unsafe shard file name in {relative}")
+            hierarchy = manifest.get("hierarchy")
+            if hierarchy is not None and not (
+                isinstance(hierarchy, dict)
+                and _SAFE_NAME.match(str(hierarchy.get("directory", "")))
+                and isinstance(hierarchy.get("shards"), dict)
+                and isinstance(hierarchy.get("shard_key_length"), int)
+                and hierarchy["shard_key_length"] >= 1
+                and all(
+                    isinstance(hierarchy.get(name), str) and hierarchy[name]
+                    for name in ("code_column", "path_column", "path_separator")
+                )
+                and all(
+                    _SAFE_NAME.match(str(shard.get("file", "")))
+                    for shard in hierarchy["shards"].values()
+                )
+            ):
+                raise OntologyPackError(f"{relative} has no valid hierarchy table")
             self._manifests[vocabulary] = (relative.rsplit("/", 1)[0], manifest)
             self.stats[vocabulary] = {
                 "release": manifest.get("release"),

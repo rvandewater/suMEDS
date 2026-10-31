@@ -132,14 +132,18 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet --rules ru
 
 Codes are validated against ontology packs kept in a separately versioned
 data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard
-on demand from a pinned release tag (default `v0.1.0`, with the sha256 of its
+on demand from a pinned release tag (default `v0.2.0`, with the sha256 of its
 index pinned in suMEDS), verifies every file, and caches it; `--offline` and
 `--ontology-source` (a mirror, or packs you rebuilt yourself from the official
-sources) are supported. Release `v0.1.0` holds ICD-10-CM and ICD-10-PCS (FY2016
+sources) are supported. Release `v0.2.0` holds ICD-10-CM and ICD-10-PCS (FY2016
 to FY2027), ICD-9-CM and ICD-9 procedures (v32), which CDC/NCHS and CMS publish
 without a license agreement (ICD-10-CM and ICD-9-CM adapt WHO classifications,
-and WHO keeps the copyright in content taken from them), and LOINC 2.83 under the [LOINC license](https://github.com/rvandewater/sumeds-ontologies/blob/v0.1.0/ontologies/LOINC/2.83/LoincLicense_5.8.txt).
+and WHO keeps the copyright in content taken from them), and LOINC 2.83 with
+its multiaxial hierarchy under the [LOINC license](https://github.com/rvandewater/sumeds-ontologies/blob/v0.2.0/ontologies/LOINC/2.83/LoincLicense_5.8.txt).
 Dataset crosswalk tables (for example lab item ids to LOINC) live there as well.
+Every added parent comes with its name in `parent_names`, as the LOINC license
+asks for LOINC codes; LOINC Parts as parents are opt-in (`--loinc-hierarchy`).
+With an Athena download, `--no-packs` validates rule codes against Athena only.
 Vocabularies that may not be redistributed or whose terms are unknown (SNOMED
 CT, CPT4, WHO ICD-10, ATC, ...) are validated only through your own Athena
 download.

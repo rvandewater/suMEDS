@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,6 +22,14 @@ _RELATIONSHIPS = {
     "child_codes": "child",
     "sibling_codes": "sibling",
 }
+#: Output columns naming each entry of a relationship list, aligned with it: the
+#: official name of every vocabulary code enrichment adds (LOINC requires a LOINC
+#: code or Part number to travel with its name), null where none is known.
+_NAMES = {
+    "parent_codes": "parent_names",
+    "child_codes": "child_names",
+    "sibling_codes": "sibling_names",
+}
 _FIELDS = {
     "description": pl.String,
     **{name: pl.List(pl.String) for name in _RELATIONSHIPS},
@@ -31,7 +40,7 @@ _FIELDS = {
     "standard_concept": pl.String,
 }
 _MATCH_RANK = "_athena_match_rank"
-_INTERNAL = {f"_athena_{name}" for name in _FIELDS} | {_MATCH_RANK}
+_INTERNAL = {f"_athena_{name}" for name in (*_FIELDS, *_NAMES.values())} | {_MATCH_RANK}
 _MATCH_SCHEMA = {
     "_target_code": pl.String,
     "_rank": pl.UInt8,
@@ -39,8 +48,9 @@ _MATCH_SCHEMA = {
     "_relationship": pl.String,
     "_related_vocabulary_id": pl.String,
     "_related_concept_code": pl.String,
+    "_related_concept_name": pl.String,
 }
-_MATCH_KEYS = tuple(_MATCH_SCHEMA)[:-3]
+_MATCH_KEYS = tuple(_MATCH_SCHEMA)[:-4]
 _CANDIDATE_SCHEMA = {
     "_target_code": pl.String,
     "vocabulary_id": pl.String,
@@ -51,9 +61,14 @@ _ENRICHMENT_SCHEMA = {
     "code": pl.String,
     _MATCH_RANK: pl.UInt8,
     **{f"_athena_{name}": dtype for name, dtype in _FIELDS.items()},
+    **{f"_athena_{name}": pl.List(pl.String) for name in _NAMES.values()},
 }
 # Heuristic candidate ranks: VOCAB//CODE, VOCAB//VERSION//CODE, parent reference.
 _PARENT_REFERENCE_RANK = 2
+#: Vocabularies whose hierarchy is code truncation (I50.23 -> I50.2 -> I50). OMOP
+#: keeps it only as "Is a" relationships, not in CONCEPT_ANCESTOR, so Athena
+#: enrichment adds the valid shorter codes of the same vocabulary as parents.
+_TRUNCATION_VOCABULARIES = frozenset({"ICD9CM", "ICD9Proc", "ICD10CM", "ICD10PCS"})
 
 
 def enrich_metadata(frame: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFrame:
@@ -112,6 +127,7 @@ def _enrich(
             if schema[name] == pl.String:
                 existing = existing.str.split("|")
             existing = existing.cast(dtype, strict=False)
+            expressions.append(existing.alias(f"_existing_{name}"))
             present = existing.is_not_null() | incoming.is_not_null()
             if name == "parent_codes":
                 if config.exclude_self_parent_code:
@@ -138,7 +154,52 @@ def _enrich(
                     name
                 )
             )
-    return joined.with_columns(expressions).drop(*sorted(_INTERNAL))
+    joined = joined.with_columns(expressions)
+
+    names = []
+    for name, label in _NAMES.items():
+        if not getattr(config, name):
+            continue
+        inputs = {
+            "codes": pl.col(name),
+            "incoming_codes": pl.col(f"_athena_{name}"),
+            "incoming_names": pl.col(f"_athena_{label}"),
+        }
+        if name in schema:
+            inputs["existing_codes"] = pl.col(f"_existing_{name}")
+        if label in schema:
+            existing = pl.col(label)
+            if schema[label] == pl.String:
+                existing = existing.str.json_decode(pl.List(pl.String))
+            inputs["existing_names"] = existing.cast(pl.List(pl.String), strict=False)
+        names.append(
+            pl.struct(**inputs)
+            .map_elements(_aligned_names, return_dtype=pl.List(pl.String))
+            .alias(label)
+        )
+    temporary = [f"_existing_{name}" for name in _RELATIONSHIPS if name in schema]
+    return (
+        joined.with_columns(names)
+        .drop(*sorted(_INTERNAL))
+        .drop(temporary, strict=False)
+    )
+
+
+def _aligned_names(row: dict[str, Any]) -> list[str | None] | None:
+    """Names for the merged code list: existing names first, then ours."""
+
+    codes = row["codes"]
+    if codes is None:
+        return None
+    known: dict[str, str] = {}
+    for values, names in (
+        (row.get("existing_codes"), row.get("existing_names")),
+        (row["incoming_codes"], row["incoming_names"]),
+    ):
+        for value, name in zip(values or (), names or ()):
+            if value is not None and name is not None:
+                known.setdefault(_reference_key(value), name)
+    return [None if code is None else known.get(_reference_key(code)) for code in codes]
 
 
 def _reference_key(value: str) -> str:
@@ -260,6 +321,22 @@ def _coverage(frame: pl.LazyFrame) -> dict[str, int]:
         .items()
     }
     coverage["dataset_parent_links"] = coverage["parent_links"] = 0
+    coverage["named_parent_links"] = 0
+    if "parent_names" in schema:
+        names = pl.col("parent_names")
+        if schema["parent_names"] == pl.String:
+            names = names.str.json_decode(pl.List(pl.String))
+        coverage["named_parent_links"] = int(
+            frame.select(
+                names.cast(pl.List(pl.String), strict=False)
+                .list.drop_nulls()
+                .list.len()
+                .sum()
+            )
+            .collect(engine="streaming")
+            .item()
+            or 0
+        )
     if "parent_codes" in schema:
         parents = pl.col("parent_codes")
         if schema["parent_codes"] == pl.String:
@@ -319,7 +396,8 @@ def _print_enrichment_report(
         )
     print(
         "  Parent codes (all entries): "
-        f"{before['parent_links']:,} -> {after['parent_links']:,}"
+        f"{before['parent_links']:,} -> {after['parent_links']:,} "
+        f"({after['named_parent_links']:,} named)"
     )
     print(
         "  Same-dataset parent links:  "
@@ -335,7 +413,7 @@ def _print_enrichment_report(
         )
         if rule["skipped"]:
             print(
-                f"    {name}: {rule['matched']:,} matched, skipped (no Athena source)"
+                f"    {name}: {rule['matched']:,} matched, skipped ({rule['skipped']})"
             )
             continue
         validated = rule["athena"] + rule["pack"]
@@ -367,8 +445,72 @@ def _coverage_value(count: int, total: int) -> str:
 
 def _athena_matches(candidates: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFrame:
     if config.csv_dir is not None:
-        return _csv_matches(candidates, config.csv_dir, config)
-    return _postgres_matches(candidates, config.postgres or "", config)
+        matches = _csv_matches(candidates, config.csv_dir, config)
+    else:
+        matches = _postgres_matches(candidates, config.postgres or "", config)
+    if not config.parent_codes:
+        return matches
+    return _with_truncation_parents(matches, config)
+
+
+def _truncations(code: str) -> list[str]:
+    """Shorter codes of ``code``, nearest first, without a trailing dot."""
+
+    prefixes: list[str] = []
+    for end in range(len(code) - 1, 0, -1):
+        prefix = code[:end].rstrip(".")
+        if prefix and prefix not in prefixes:
+            prefixes.append(prefix)
+    return prefixes
+
+
+def _with_truncation_parents(
+    matches: pl.LazyFrame, config: EnrichmentConfig
+) -> pl.LazyFrame:
+    """Add each valid shorter code of a truncation vocabulary as a parent."""
+
+    found = (
+        matches.collect(engine="streaming")
+        .select(list(_MATCH_SCHEMA))
+        .cast(_MATCH_SCHEMA)  # type: ignore[arg-type]
+    )
+    keys = (
+        found.select(_MATCH_KEYS)
+        .unique()
+        .filter(pl.col("vocabulary_id").is_in(list(_TRUNCATION_VOCABULARIES)))
+    )
+    wanted = sorted(
+        {
+            (vocabulary, prefix)
+            for vocabulary, code in keys.select("vocabulary_id", "concept_code").rows()
+            for prefix in _truncations(code)
+        }
+    )
+    if not wanted:
+        return found.lazy()
+    lookup = pl.DataFrame(
+        [(f"{vocabulary}//{code}", vocabulary, code, 0) for vocabulary, code in wanted],
+        schema=_CANDIDATE_SCHEMA,
+        orient="row",
+    ).lazy()
+    plain = replace(config, parent_codes=False, child_codes=False, sibling_codes=False)
+    valid = {
+        (row["vocabulary_id"], row["concept_code"]): row["description"]
+        for row in _athena_matches(lookup, plain).collect().iter_rows(named=True)
+    }
+    rows = [
+        {
+            **key,
+            "_relationship": "parent",
+            "_related_vocabulary_id": key["vocabulary_id"],
+            "_related_concept_code": prefix,
+            "_related_concept_name": valid[(key["vocabulary_id"], prefix)],
+        }
+        for key in keys.iter_rows(named=True)
+        for prefix in _truncations(key["concept_code"])
+        if (key["vocabulary_id"], prefix) in valid
+    ]
+    return pl.concat([found, pl.DataFrame(rows, schema=_MATCH_SCHEMA)]).lazy()
 
 
 def _code_candidates(frame: pl.LazyFrame, offset: int = 0) -> pl.LazyFrame:
@@ -476,7 +618,13 @@ def _rule_enrichment(
             "athena": 0,
             "pack": 0,
             "tagged": 0,
-            "skipped": rule.validate == "athena" and not athena_enabled,
+            "skipped": (
+                "packs disabled"
+                if isinstance(rule, CrosswalkRule) and not config.packs
+                else "no Athena source"
+                if rule.validate == "athena" and not athena_enabled
+                else None
+            ),
         }
         for rule in vocabulary_rules
     ]
@@ -485,7 +633,9 @@ def _rule_enrichment(
         if isinstance(rule, CrosswalkRule):
             keys = {code: key for code in codes if (key := rule.key(code))}
             mapping = (
-                rule.mapping(ontology_packs().crosswalk(rule.table)) if keys else {}
+                rule.mapping(ontology_packs().crosswalk(rule.table))
+                if keys and config.packs
+                else {}
             )
             resolved_values = {code: mapping.get(key, ()) for code, key in keys.items()}
         else:
@@ -517,7 +667,7 @@ def _rule_enrichment(
     for matches in hits.values():
         for index, values in matches:
             rule = vocabulary_rules[index]
-            if rule.validate == "pack":
+            if rule.validate == "pack" and config.packs:
                 requested.setdefault(rule.vocabulary, set()).update(values)
     entries: dict[tuple[str, str], PackEntry] = {}
     for vocabulary, values in sorted(requested.items()):
@@ -526,6 +676,7 @@ def _rule_enrichment(
             values,
             child_depth=config.child_depth if config.child_codes else 0,
             siblings=config.sibling_codes,
+            hierarchy=config.loinc_hierarchy and vocabulary == "LOINC",
         )
         entries.update(((vocabulary, code), entry) for code, entry in found.items())
 
@@ -555,7 +706,10 @@ def _rule_enrichment(
         if choice is None and matched is None:
             choice = tag
         if choice is None and matched is not None:
-            record = {name: matched[f"_athena_{name}"] for name in _FIELDS}
+            record = {
+                name: matched[f"_athena_{name}"]
+                for name in (*_FIELDS, *_NAMES.values())
+            }
             record[_MATCH_RANK] = athena_rank
             if athena_rank < offset:
                 rule = vocabulary_rules[athena_rank]
@@ -569,7 +723,7 @@ def _rule_enrichment(
         elif choice is not None:
             index, values = choice
             rule = vocabulary_rules[index]
-            record = dict.fromkeys(_FIELDS)
+            record = dict.fromkeys((*_FIELDS, *_NAMES.values()))
             record[_MATCH_RANK] = index
             references = [f"{rule.vocabulary}//{value}" for value in values]
             if rule.validate == "pack":
@@ -585,6 +739,7 @@ def _rule_enrichment(
                 rule_stats[index]["pack"] += 1
             else:
                 record["parent_codes"] = references
+                record["parent_names"] = [None] * len(references)
                 vocabulary_parents[code] = []
                 rule_stats[index]["tagged"] += 1
             resolved[code] = (index, references[0])
@@ -624,10 +779,14 @@ def _rule_enrichment(
             if not parents:
                 continue
             record = records.setdefault(
-                code, {**dict.fromkeys(_FIELDS), _MATCH_RANK: None}
+                code,
+                {**dict.fromkeys((*_FIELDS, *_NAMES.values())), _MATCH_RANK: None},
             )
             current = record["parent_codes"] or []
-            record["parent_codes"] = current + [p for p in parents if p not in current]
+            names = record["parent_names"] or [None] * len(current)
+            new = [p for p in parents if p not in current]
+            record["parent_codes"] = current + new
+            record["parent_names"] = names + [None] * len(new)
 
     stats["rules"] = rule_stats
     stats["hierarchy"] = hierarchy_stats
@@ -641,13 +800,23 @@ def _rule_enrichment(
         own = _reference_key(code)
         for name in _FIELDS:
             value = record[name]
-            if name in _RELATIONSHIPS and value:
+            if name in _RELATIONSHIPS:
+                codes = value or []
+                labels = list(record[_NAMES[name]] or [])
+                labels += [None] * (len(codes) - len(labels))
                 # A code is never its own parent, child or sibling. Codes that already are
                 # vocabulary references (OMOP-style ICD10PCS//0DTJ4ZZ or ICD10PCS/0DTJ4ZZ)
                 # would otherwise list their own rule reference.
-                value = [item for item in value if _reference_key(item) != own]
-            if name in _RELATIONSHIPS and not value:
-                value = None
+                kept = [
+                    (item, label)
+                    for item, label in zip(codes, labels)
+                    if _reference_key(item) != own
+                ]
+                columns[f"_athena_{name}"].append([item for item, _ in kept] or None)
+                columns[f"_athena_{_NAMES[name]}"].append(
+                    [label for _, label in kept] or None
+                )
+                continue
             columns[f"_athena_{name}"].append(value)
     return (
         pl.DataFrame(columns, schema=_ENRICHMENT_SCHEMA).lazy(),
@@ -681,28 +850,61 @@ def _add_vocabulary(
     entry: PackEntry | None,
     vocabulary: str,
 ) -> None:
-    """Put a rule's own code first in its parents and merge the pack hierarchy."""
+    """Put a rule's own code first in its parents and merge the pack hierarchy.
 
-    def merge(current: list[str] | None, extra: list[str]) -> list[str]:
-        result = list(current or [])
-        result.extend(value for value in extra if value not in result)
+    Every relationship list keeps its names aligned (``parent_names`` and so on);
+    a known name is never replaced.
+    """
+
+    Entry = tuple[str, "str | None"]
+
+    def entries(field: str) -> list[Entry]:
+        codes = record[field] or []
+        names = list(record[_NAMES[field]] or [])
+        return list(zip(codes, names + [None] * (len(codes) - len(names))))
+
+    def merge(current: list[Entry], extra: list[Entry]) -> list[Entry]:
+        result = list(current)
+        position = {code: index for index, (code, _) in enumerate(result)}
+        for code, name in extra:
+            if code not in position:
+                position[code] = len(result)
+                result.append((code, name))
+            elif result[position[code]][1] is None:
+                result[position[code]] = (code, name)
         return result
 
+    def store(field: str, values: list[Entry]) -> None:
+        record[field] = [code for code, _ in values]
+        record[_NAMES[field]] = [name for _, name in values]
+
+    own = record["description"]
+    if own is None and entry is not None:
+        own = entry.description
     parents = [
-        reference,
-        *(value for value in record["parent_codes"] or [] if value != reference),
+        (reference, own),
+        *(e for e in entries("parent_codes") if e[0] != reference),
     ]
     if entry is not None:
 
-        def refs(values: tuple[str, ...]) -> list[str]:
-            return [f"{vocabulary}//{value}" for value in values]
+        def refs(values: tuple[str, ...], names: tuple[str | None, ...]) -> list[Entry]:
+            padded = list(names) + [None] * (len(values) - len(names))
+            return [
+                (f"{vocabulary}//{value}", name) for value, name in zip(values, padded)
+            ]
 
-        parents = merge(parents, refs(entry.ancestors))
-        record["child_codes"] = merge(record["child_codes"], refs(entry.children))
-        record["sibling_codes"] = merge(record["sibling_codes"], refs(entry.siblings))
+        parents = merge(parents, refs(entry.ancestors, entry.ancestor_names))
+        store(
+            "child_codes",
+            merge(entries("child_codes"), refs(entry.children, entry.child_names)),
+        )
+        store(
+            "sibling_codes",
+            merge(entries("sibling_codes"), refs(entry.siblings, entry.sibling_names)),
+        )
         if record["description"] is None:
             record["description"] = entry.description
-    record["parent_codes"] = parents
+    store("parent_codes", parents)
 
 
 def _ontology_parents(
@@ -807,6 +1009,7 @@ def _csv_matches(
         pl.col("concept_id").alias("_related_concept_id"),
         pl.col("vocabulary_id").alias("_related_vocabulary_id"),
         pl.col("concept_code").alias("_related_concept_code"),
+        pl.col("concept_name").alias("_related_concept_name"),
     )
     # Each relationship maps a matched concept_id to a _related_concept_id.
     edges = {}
@@ -850,7 +1053,7 @@ def _csv_matches(
                 *_MATCH_KEYS,
                 *(
                     pl.lit(None, dtype=pl.String).alias(name)
-                    for name in tuple(_MATCH_SCHEMA)[-3:]
+                    for name in tuple(_MATCH_SCHEMA)[-4:]
                 ),
             ),
             *(
@@ -861,6 +1064,7 @@ def _csv_matches(
                     pl.lit(relationship).alias("_relationship"),
                     "_related_vocabulary_id",
                     "_related_concept_code",
+                    "_related_concept_name",
                 )
                 for relationship, pairs in edges.items()
             ),
@@ -935,7 +1139,8 @@ JOIN concept related ON related.concept_id = child_h.descendant_concept_id
 SELECT m._target_code, m._rank, m.concept_id,
        '{relationship}'::text AS _relationship,
        related.vocabulary_id AS _related_vocabulary_id,
-       related.concept_code AS _related_concept_code
+       related.concept_code AS _related_concept_code,
+       related.concept_name AS _related_concept_name
 FROM chosen m{join}WHERE related.invalid_reason IS NULL
 """
         for relationship, join in joins.items()
@@ -946,7 +1151,8 @@ FROM chosen m{join}WHERE related.invalid_reason IS NULL
 SELECT NULL::text AS _target_code, NULL::smallint AS _rank,
        NULL::bigint AS concept_id, NULL::text AS _relationship,
        NULL::text AS _related_vocabulary_id,
-       NULL::text AS _related_concept_code
+       NULL::text AS _related_concept_code,
+       NULL::text AS _related_concept_name
 WHERE false
 """
     )
@@ -993,7 +1199,8 @@ SELECT
     m.standard_concept,
     r._relationship,
     r._related_vocabulary_id,
-    r._related_concept_code
+    r._related_concept_code,
+    r._related_concept_name
 FROM chosen m
 LEFT JOIN relationships r
     ON r._target_code = m._target_code
@@ -1035,32 +1242,49 @@ def _collapse_matches(matches: pl.LazyFrame) -> pl.LazyFrame:
     chosen = best.with_columns(
         pl.col("concept_id").min().over("_target_code").alias("_chosen_concept_id")
     ).filter(pl.col("concept_id") == pl.col("_chosen_concept_id"))
-    related_code = pl.concat_str(
-        "_related_vocabulary_id",
-        "_related_concept_code",
-        separator="//",
-        ignore_nulls=False,
+    related = pl.struct(
+        code=pl.concat_str(
+            "_related_vocabulary_id",
+            "_related_concept_code",
+            separator="//",
+            ignore_nulls=False,
+        ),
+        name=pl.col("_related_concept_name"),
     )
+
+    def entries(relationship: str) -> pl.Expr:
+        # One entry per related code, sorted by code, with its concept name.
+        values = (
+            pl.when(pl.col("_relationship") == relationship)
+            .then(related)
+            .otherwise(None)
+            .drop_nulls()
+        )
+        values = values.sort_by(values.struct.field("code"))
+        return values.filter(values.struct.field("code").is_first_distinct())
+
+    def field(name: str, part: str) -> pl.Expr:
+        return (
+            pl.when(pl.col(name).list.len() > 0)
+            .then(pl.col(name).list.eval(pl.element().struct.field(part)))
+            .otherwise(None)
+        )
+
     collapsed = chosen.group_by(*_MATCH_KEYS).agg(
-        pl.when(pl.col("_relationship") == relationship)
-        .then(related_code)
-        .otherwise(None)
-        .drop_nulls()
-        .unique()
-        .sort()
-        .alias(name)
+        entries(relationship).alias(name)
         for name, relationship in _RELATIONSHIPS.items()
     )
     return collapsed.select(
         pl.col("_target_code").alias("code"),
         pl.col("_rank").alias(_MATCH_RANK),
         *(
-            pl.when(pl.col(name).list.len() > 0)
-            .then(pl.col(name))
-            .otherwise(None)
-            .alias(f"_athena_{name}")
+            field(name, "code").alias(f"_athena_{name}")
             if name in _RELATIONSHIPS
             else pl.col(name).alias(f"_athena_{name}")
             for name in _FIELDS
+        ),
+        *(
+            field(name, "name").alias(f"_athena_{label}")
+            for name, label in _NAMES.items()
         ),
     )
