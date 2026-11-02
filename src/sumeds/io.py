@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import polars as pl
 
+#: List columns that CSV stores as JSON arrays rather than ``|``-joined text,
+#: because names can contain ``|`` and can be missing.
+JSON_LIST_COLUMNS = frozenset({"parent_names", "child_names", "sibling_names"})
 OUTPUT_FORMATS = {
     ".parquet": "parquet",
     ".csv": "csv",
@@ -67,7 +71,14 @@ def sink_table(
             if isinstance(dtype, pl.Array):
                 column = column.arr.to_list()
                 dtype = pl.List(dtype.inner)
-            if isinstance(dtype, pl.List):
+            if isinstance(dtype, pl.List) and name in JSON_LIST_COLUMNS:
+                nested.append(
+                    column.map_elements(
+                        lambda values: json.dumps(list(values), ensure_ascii=False),
+                        return_dtype=pl.String,
+                    ).alias(name)
+                )
+            elif isinstance(dtype, pl.List):
                 nested.append(
                     column.list.eval(pl.element().cast(pl.String))
                     .list.join("|")

@@ -33,6 +33,13 @@ jobs:
           pip install -e ".[tests, polars, pandas]"
           pip install pytest pytest-cov --upgrade
 
+      - name: Check out the pinned ontology data release
+        run: |
+          REF=$(python -c "from sumeds.ontology import DEFAULT_REF; print(DEFAULT_REF)")
+          git clone --quiet --depth 1 --branch "$REF" \
+            https://github.com/rvandewater/sumeds-ontologies "$RUNNER_TEMP/sumeds-ontologies"
+          echo "SUMEDS_ONTOLOGIES_DIR=$RUNNER_TEMP/sumeds-ontologies/ontologies" >> "$GITHUB_ENV"
+
       #----------------------------------------------
       #              run test suite
       #----------------------------------------------

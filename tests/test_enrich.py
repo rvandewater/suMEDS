@@ -163,16 +163,56 @@ def test_csv_enrichment_resolves_common_and_versioned_codes(
     lab = rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
     assert lab["description"] == "Existing lab name"
-    assert lab["parent_codes"] is None
+    # Enrichment is non-destructive by default: the lookup reference stays verbatim.
+    assert lab["parent_codes"] == ["LOINC/5803-2"]
     assert rows["malformed"]["parent_codes"] is None
 
-    retained = enrich_metadata(
+    excluded = enrich_metadata(
         frame,
-        EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=False),
+        EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=True),
     ).collect()
-    assert retained.filter(pl.col("code") == "LAB//51491//units").to_dicts()[0][
-        "parent_codes"
-    ] == ["LOINC//5803-2"]
+    assert (
+        excluded.filter(pl.col("code") == "LAB//51491//units").to_dicts()[0][
+            "parent_codes"
+        ]
+        is None
+    )
+
+
+def test_enrichment_never_removes_or_rewrites_existing_metadata(
+    athena_csv: Path,
+) -> None:
+    existing = {
+        "LAB//51491//units": ["LOINC/5803-2", "KEEP", "KEEP"],
+        "ICD10CM//2024//A01": ["EXISTING", "SNOMED/BRANCH"],
+        "not-in-athena": ["KEEP"],
+    }
+    frame = pl.DataFrame(
+        {
+            "code": list(existing),
+            "description": ["Mine", None, "Also mine"],
+            "parent_codes": list(existing.values()),
+        }
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena_csv))
+        .collect()
+        .to_dicts()
+    }
+    for code, parents in existing.items():
+        merged = rows[code]["parent_codes"]
+        assert merged[: len(parents)] == parents
+        added = merged[len(parents) :]
+        spelled = {
+            parent.replace("/", "//") for parent in parents if parent.count("/") == 1
+        }
+        assert not set(added) & (set(parents) | spelled)
+        assert len(added) == len(set(added))
+    assert rows["LAB//51491//units"]["description"] == "Mine"
+    assert rows["not-in-athena"]["description"] == "Also mine"
+    assert rows["ICD10CM//2024//A01"]["description"] is not None
+    assert "SNOMED//BRANCH" not in rows["ICD10CM//2024//A01"]["parent_codes"]
 
 
 def test_unmatched_relationship_arrays_pass_through(athena_csv: Path) -> None:
@@ -306,18 +346,19 @@ def test_postgres_uses_batched_copy(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "h.min_levels_of_separation <= 2" in kwargs["input"]
         assert "child_h.min_levels_of_separation = 1" in kwargs["input"]
         assert "'sibling'::text" in kwargs["input"]
+        assert "related.concept_name AS _related_concept_name" in kwargs["input"]
         stdout = (
             "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
             "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
-            "_related_concept_code\n"
+            "_related_concept_code,_related_concept_name\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,parent,SNOMED,PARENT\n"
+            "Visit,,parent,SNOMED,PARENT,Parent concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,parent,SNOMED,PARENT\n"
+            "Visit,,parent,SNOMED,PARENT,Parent concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,child,SNOMED,CHILD1\n"
+            "Visit,,child,SNOMED,CHILD1,Child concept\n"
             "CMS Place of Service//02//end,0,Telehealth,CMS Place of Service,5083,02,"
-            "Visit,,sibling,SNOMED,SIB\n"
+            "Visit,,sibling,SNOMED,SIB,\n"
         )
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -337,6 +378,9 @@ def test_postgres_uses_batched_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["parent_codes"].to_list() == [["SNOMED//PARENT"]]
     assert result["child_codes"].to_list() == [["SNOMED//CHILD1"]]
     assert result["sibling_codes"].to_list() == [["SNOMED//SIB"]]
+    assert result["parent_names"].to_list() == [["Parent concept"]]
+    assert result["child_names"].to_list() == [["Child concept"]]
+    assert result["sibling_names"].to_list() == [[None]]
 
 
 def test_postgres_parent_toggle_preserves_unmatched_metadata(
@@ -349,8 +393,8 @@ def test_postgres_parent_toggle_preserves_unmatched_metadata(
         stdout = (
             "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
             "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
-            "_related_concept_code\n"
-            "SNOMED//ROOT,0,Root,SNOMED,10,ROOT,Visit,S,,,\n"
+            "_related_concept_code,_related_concept_name\n"
+            "SNOMED//ROOT,0,Root,SNOMED,10,ROOT,Visit,S,,,,\n"
         )
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -408,7 +452,7 @@ def test_standalone_handles_csv_and_null_columns(
     assert cms["parent_codes"] == "SNOMED//BRANCH|SNOMED//PARENT|SNOMED//ROOT"
     lab = csv_rows["LAB//51491//units"]
     assert lab["concept_id"] == 300
-    assert lab["parent_codes"] is None
+    assert lab["parent_codes"] == "LOINC/5803-2"
 
     enrich_file(csv_input, parquet_output, EnrichmentConfig(csv_dir=athena_csv))
     assert pl.read_parquet(parquet_output).schema["concept_id"] == pl.Int64
@@ -547,10 +591,230 @@ def test_self_parent_exclusion_skips_leading_null(athena_csv: Path) -> None:
         {"code": ["LOCAL"], "parent_codes": [[None, "SNOMED/PARENT", "KEEP"]]}
     )
     row = (
-        enrich_metadata(frame, EnrichmentConfig(csv_dir=athena_csv))
+        enrich_metadata(
+            frame,
+            EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=True),
+        )
         .collect()
         .row(0, named=True)
     )
 
     assert row["concept_id"] == 100
     assert row["parent_codes"] == ["KEEP", "SNOMED//BRANCH", "SNOMED//ROOT"]
+
+
+def _athena_icd(directory: Path) -> Path:
+    directory.mkdir()
+    concepts = [
+        (1, "Heart failure", "Condition", "ICD10CM", "I50", None, None),
+        (2, "Systolic heart failure", "Condition", "ICD10CM", "I50.2", None, None),
+        (3, "Acute on chronic", "Condition", "ICD10CM", "I50.23", None, None),
+        (4, "Retired header", "Condition", "ICD10CM", "I50.9", None, "D"),
+        (5, "Spinal devices", "Procedure", "ICD9Proc", "84.8", None, None),
+        (6, "Other musculoskeletal", "Procedure", "ICD9Proc", "84", None, None),
+        (7, "Pedicle-based", "Procedure", "ICD9Proc", "84.82", None, None),
+    ]
+    pl.DataFrame(
+        concepts,
+        schema=[
+            "concept_id",
+            "concept_name",
+            "domain_id",
+            "vocabulary_id",
+            "concept_code",
+            "standard_concept",
+            "invalid_reason",
+        ],
+        orient="row",
+    ).write_csv(directory / "CONCEPT.csv", separator="\t")
+    pl.DataFrame(
+        schema={
+            "ancestor_concept_id": pl.Int64,
+            "descendant_concept_id": pl.Int64,
+            "min_levels_of_separation": pl.Int64,
+        }
+    ).write_csv(directory / "CONCEPT_ANCESTOR.csv", separator="\t")
+    return directory
+
+
+def test_athena_icd_parents_are_the_valid_shorter_codes(tmp_path: Path) -> None:
+    athena = _athena_icd(tmp_path / "athena")
+    frame = pl.DataFrame(
+        {"code": ["ICD10CM//I50.23", "ICD9Proc//84.82", "ICD10CM//I50"]}
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena))
+        .collect()
+        .to_dicts()
+    }
+    assert rows["ICD10CM//I50.23"]["parent_codes"] == ["ICD10CM//I50", "ICD10CM//I50.2"]
+    assert rows["ICD10CM//I50.23"]["parent_names"] == [
+        "Heart failure",
+        "Systolic heart failure",
+    ]
+    assert rows["ICD9Proc//84.82"]["parent_codes"] == ["ICD9Proc//84", "ICD9Proc//84.8"]
+    assert rows["ICD10CM//I50"]["parent_codes"] is None
+    off = enrich_metadata(
+        frame.lazy(), EnrichmentConfig(csv_dir=athena, parent_codes=False)
+    ).collect()
+    assert "parent_codes" not in off.columns
+
+
+def test_postgres_icd_parents_are_looked_up_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs["input"])
+        header = (
+            "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
+            "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
+            "_related_concept_code,_related_concept_name\n"
+        )
+        if len(calls) == 1:
+            body = "ICD10CM//I50.23,0,Acute,ICD10CM,3,I50.23,Condition,,,,,\n"
+        else:
+            assert "ICD10CM//I50.2,ICD10CM,I50.2,0" in kwargs["input"]
+            assert "'parent'::text" not in kwargs["input"]
+            body = (
+                "ICD10CM//I50.2,0,Systolic,ICD10CM,2,I50.2,Condition,,,,,\n"
+                "ICD10CM//I50,0,Heart failure,ICD10CM,1,I50,Condition,,,,,\n"
+            )
+        return subprocess.CompletedProcess(command, 0, header + body, "")
+
+    monkeypatch.setattr("sumeds.enrich.subprocess.run", fake_run)
+    result = enrich_metadata(
+        pl.DataFrame({"code": ["ICD10CM//I50.23"]}).lazy(),
+        EnrichmentConfig(postgres="postgresql://example/omop"),
+    ).collect()
+    assert len(calls) == 2
+    assert result["parent_codes"].to_list() == [["ICD10CM//I50", "ICD10CM//I50.2"]]
+    assert result["parent_names"].to_list() == [["Heart failure", "Systolic"]]
+
+
+def test_single_slash_codes_are_their_own_concept(
+    athena_csv: Path, tmp_path: Path
+) -> None:
+    frame = pl.DataFrame(
+        {
+            "code": ["SNOMED/PARENT", "SNOMED/UNKNOWN"],
+            "parent_codes": [["SNOMED/BRANCH"], ["SNOMED/BRANCH"]],
+        }
+    )
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), EnrichmentConfig(csv_dir=athena_csv))
+        .collect()
+        .to_dicts()
+    }
+    # OMOP-style VOCABULARY/CODE is a layout: the code is its own concept, not
+    # its first parent.
+    known = rows["SNOMED/PARENT"]
+    assert known["concept_id"] == 100 and known["description"] == "Visit parent"
+    assert known["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert known["parent_names"] == ["Branch", "Root"]
+    # A code missing from Athena is not taken for its parent of the same
+    # vocabulary; the parent is still named and its ancestors are added.
+    unknown = rows["SNOMED/UNKNOWN"]
+    assert unknown["concept_id"] is None and unknown["description"] is None
+    assert unknown["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert unknown["parent_names"] == ["Branch", "Root"]
+
+    # The same code written with its dots still identifies the code.
+    athena = _athena_icd(tmp_path / "icd")
+    row = (
+        enrich_metadata(
+            pl.LazyFrame(
+                {"code": ["ICD10CM//I5023"], "parent_codes": [["ICD10CM/I50.23"]]}
+            ),
+            EnrichmentConfig(csv_dir=athena),
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert row["concept_id"] == 3 and row["concept_code"] == "I50.23"
+
+
+def test_every_parent_reference_is_named_and_expanded(tmp_path: Path) -> None:
+    athena = _athena_icd(tmp_path / "athena")
+    frame = pl.LazyFrame(
+        {
+            "code": ["DIAGNOSIS//chf"],
+            "parent_codes": [["ICD10CM/I50.23", "ICD9Proc/84.82", "LOCAL"]],
+        }
+    )
+    row = (
+        enrich_metadata(frame, EnrichmentConfig(csv_dir=athena))
+        .collect()
+        .row(0, named=True)
+    )
+    # The first reference identifies the code; the second is a parent whose
+    # ancestors are ancestors of the code as well.
+    assert row["concept_id"] == 3
+    assert row["parent_codes"] == [
+        "ICD10CM/I50.23",
+        "ICD9Proc/84.82",
+        "LOCAL",
+        "ICD10CM//I50",
+        "ICD10CM//I50.2",
+        "ICD9Proc//84",
+        "ICD9Proc//84.8",
+    ]
+    assert row["parent_names"] == [
+        "Acute on chronic",
+        "Pedicle-based",
+        None,
+        "Heart failure",
+        "Systolic heart failure",
+        "Other musculoskeletal",
+        "Spinal devices",
+    ]
+    excluded = (
+        enrich_metadata(
+            frame, EnrichmentConfig(csv_dir=athena, exclude_self_parent_code=True)
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    # The reference used to match the code is removed and never added back.
+    assert excluded["parent_codes"] == [
+        "ICD9Proc/84.82",
+        "LOCAL",
+        "ICD10CM//I50",
+        "ICD10CM//I50.2",
+        "ICD9Proc//84",
+        "ICD9Proc//84.8",
+    ]
+
+
+def test_postgres_looks_up_references_in_the_same_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs["input"])
+        assert "\tSNOMED//BRANCH,SNOMED,BRANCH,0" in kwargs["input"]
+        stdout = (
+            "_target_code,_rank,description,vocabulary_id,concept_id,concept_code,"
+            "domain_id,standard_concept,_relationship,_related_vocabulary_id,"
+            "_related_concept_code,_related_concept_name\n"
+            "\tSNOMED//BRANCH,0,Branch,SNOMED,20,BRANCH,Visit,S,parent,SNOMED,ROOT,Root\n"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr("sumeds.enrich.subprocess.run", fake_run)
+    row = (
+        enrich_metadata(
+            pl.LazyFrame({"code": ["LOCAL"], "parent_codes": [["SNOMED/BRANCH"]]}),
+            EnrichmentConfig(postgres="postgresql://example/omop"),
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert len(calls) == 1
+    assert row["concept_id"] is None
+    assert row["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
+    assert row["parent_names"] == ["Branch", "Root"]

@@ -18,7 +18,7 @@ privacy:
   rare_code_label: __RARE__
   round_counts_to: null
 
-# Optional; set exactly one source.
+# Optional; set at most one Athena source, and/or a rules file.
 enrichment:
   csv_dir: /vocabularies/athena
   # postgres: postgresql://postgres@localhost/omop
@@ -26,6 +26,12 @@ enrichment:
   child_codes: false
   sibling_codes: false
   child_depth: 3
+  # rules: rules.yaml            # sumeds-rules/0.1, relative to this file
+  # ontology_source: null        # URL or directory; default: sumeds-ontologies
+  # ontology_ref: v0.2.0         # release tag of sumeds-ontologies
+  # offline: false
+  # packs: true                  # false: rules use Athena only (needs csv_dir/postgres)
+  # loinc_hierarchy: false       # true: LOINC Parts as parents of LOINC codes
 ```
 
 ## Summary options
@@ -138,8 +144,10 @@ multiple after thresholding. Use `1` or `null` for exact counts.
 
 ## Enrichment options
 
-Set exactly one of `csv_dir` or `postgres` under `enrichment`. Omitting the
-section disables enrichment. Relative CSV directories are resolved relative to
+Set at most one of `csv_dir` or `postgres` under `enrichment`, and/or `rules`
+(a `sumeds-rules/0.1` file). With `rules` and no Athena source, rules are
+validated against the public ontology packs only. Omitting the section
+disables enrichment. Relative CSV directories are resolved relative to
 the YAML file, after expanding `~`. CLI `--athena-csv` or `--athena-postgres`
 replaces the YAML `csv_dir`/`postgres` source and keeps the YAML hierarchy
 options.
@@ -147,11 +155,32 @@ options.
 `parent_codes` defaults to `true` and adds all ancestors through the root.
 `child_codes` and `sibling_codes` default to `false`. When children are enabled,
 `child_depth` limits descendant levels and defaults to `3` (allowed range
-`1`–`100`). `exclude_self_parent_code` defaults to `true`, removing a parent
+`1`–`100`). `exclude_self_parent_code` defaults to `false`: enrichment never
+removes existing metadata unless you set it to `true`, which removes the parent
 reference used to match the Athena concept itself. CLI equivalents are
 `--[no-]parent-codes`, `--[no-]child-codes`, `--[no-]sibling-codes`,
 `--[no-]exclude-self-parent-code`, and `--child-depth`. See
-[Athena enrichment](enrichment.md) for hierarchy semantics and output fields.
+[How enrichment works](enrichment.md) for the process, hierarchy semantics
+and output fields, and [Athena enrichment](athena.md) for the Athena sources.
+
+`rules` (CLI `--rules`) is resolved relative to the YAML file.
+`ontology_source` (CLI `--ontology-source`; default: the
+`SUMEDS_ONTOLOGY_SOURCE` environment variable, else the
+`rvandewater/sumeds-ontologies` GitHub repository) is an `http(s)://` or
+`file://` URL or a directory (relative paths are resolved against the YAML
+file). `ontology_ref` (CLI `--ontology-ref`, default: the pinned release tag,
+`v0.2.0`) selects the release of the default GitHub source; a ref that is not
+a release tag or full commit sha prints a warning. `offline`
+(CLI `--[no-]offline`, default `false`) uses only cached or local packs.
+`packs` (CLI `--[no-]packs`, default `true`) set to `false` fetches no packs
+or crosswalk tables, so rules validate against the Athena source only and
+crosswalk rules are skipped; it needs `csv_dir` or `postgres`.
+`loinc_hierarchy` (CLI `--[no-]loinc-hierarchy`, default `false`) adds the
+LOINC Parts of the LOINC multiaxial hierarchy as parents of LOINC codes looked
+up in the LOINC pack; it needs `rules` and `packs: true`, and is rejected
+otherwise. See
+[Rules and ontology packs](rules.md) and
+[Athena only](athena.md#athena-only-no-packs).
 
 ## Precedence
 

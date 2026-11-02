@@ -96,9 +96,68 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
 The standalone command shows phase progress and reports Athena matches and
 before/after metadata coverage.
 
-Both `VOCABULARY//CODE//...` and
-`VOCABULARY//VOCABULARY_VERSION//CODE` layouts are resolved. See the
-[Athena enrichment guide](docs/enrichment.md).
+The `VOCABULARY//CODE//...`, `VOCABULARY//VOCABULARY_VERSION//CODE` and
+OMOP-style `VOCABULARY/CODE` layouts are resolved, and so is a code's first
+existing parent reference (`ICD9CM/428.0`). Every existing parent reference
+gets its name and its ancestors. See
+[How enrichment works](docs/enrichment.md) for the steps and a worked example,
+and [Athena enrichment](docs/athena.md) for what is read from Athena, how ICD
+parents are added, and how Athena compares with the packs.
+
+### Rules and public ontology packs
+
+Without Athena, or in addition to it, a `sumeds-rules/0.1` file maps dataset
+codes to vocabulary codes and adds parents that exist in the same table:
+
+```yaml
+schema: sumeds-rules/0.1
+ontology:
+  - id: icd10cm-diagnoses
+    pattern: '^DIAGNOSIS//ICD//10//(?P<code>[A-Z][0-9][0-9A-Z][0-9A-Z]{0,4})$'
+    vocabulary: ICD10CM
+    normalize: [{pattern: '^(...)(.+)$', replace: '\1.\2'}]
+    validate: pack            # pack | athena | none
+crosswalk:
+  - id: nwicu-lab-loinc
+    pattern: '^LAB//(?P<key>[0-9]+)//'
+    table: nwicu/loinc_parents
+    key_column: itemid
+    code_column: loinc_code
+    vocabulary: LOINC
+hierarchy:
+  - {id: eicu-diagnosis-paths, pattern: '^(?P<prefix>DIAGNOSIS//)(?P<path>.+)$', group: path, separator: '|'}
+  - {id: icd-prefix, pattern: '^(?P<p>DIAGNOSIS//ICD10_CN//)(?P<code>.+)$', group: code, mode: prefix, ignore: '.'}
+  - {id: ontology-parents-in-dataset, from_ontology: true}
+```
+
+```bash
+uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet --rules rules.yaml
+```
+
+Codes are validated against ontology packs kept in a separately versioned
+data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard
+on demand from a pinned release tag (default `v0.2.0`, with the sha256 of its
+index pinned in suMEDS), verifies every file, and caches it; `--offline` and
+`--ontology-source` (a mirror, or packs you rebuilt yourself from the official
+sources) are supported. Release `v0.2.0` holds ICD-10-CM and ICD-10-PCS (FY2016
+to FY2027), ICD-9-CM and ICD-9 procedures (v32), which CDC/NCHS and CMS publish
+without a license agreement (ICD-10-CM and ICD-9-CM adapt WHO classifications,
+and WHO keeps the copyright in content taken from them), and LOINC 2.83 with
+its multiaxial hierarchy under the [LOINC license](https://github.com/rvandewater/sumeds-ontologies/blob/v0.2.0/ontologies/LOINC/2.83/LoincLicense_5.8.txt).
+Dataset crosswalk tables (for example lab item ids to LOINC) live there as well.
+Every added parent comes with its name in `parent_names`, as the LOINC license
+asks for LOINC codes; LOINC Parts as parents are opt-in (`--loinc-hierarchy`).
+With an Athena download, `--no-packs` validates rule codes against Athena only.
+See [Rules and ontology packs](docs/rules.md).
+Vocabularies that may not be redistributed or whose terms are unknown (SNOMED
+CT, CPT4, WHO ICD-10, ATC, ...) are validated only through your own Athena
+download.
+
+This material contains content from LOINC (http://loinc.org). LOINC is
+copyright © Regenstrief Institute, Inc. and the Logical Observation
+Identifiers Names and Codes (LOINC) Committee and is available at no cost under
+the license at http://loinc.org/license. LOINC® is a registered United States
+trademark of Regenstrief Institute, Inc.
 
 ## Python API
 

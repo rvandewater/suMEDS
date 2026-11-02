@@ -54,8 +54,10 @@ SummaryConfig(
 `config.with_overrides(...)` creates an updated immutable copy and ignores
 `None` values, which is useful for CLI layers.
 
-Set `enrichment=EnrichmentConfig(csv_dir=...)` or
-`EnrichmentConfig(postgres=...)` to enrich released summary rows.
+Set `enrichment=EnrichmentConfig(csv_dir=...)`,
+`EnrichmentConfig(postgres=...)`, and/or `EnrichmentConfig(rules=...)` to
+enrich released summary rows. `summarize(..., verbose=True)` prints the
+enrichment report.
 
 ### `EnrichmentConfig`
 
@@ -67,15 +69,27 @@ EnrichmentConfig(
     child_codes: bool = False,
     sibling_codes: bool = False,
     child_depth: int = 3,
-    exclude_self_parent_code: bool = True,
+    exclude_self_parent_code: bool = False,
+    rules: OntologyRules | str | Path | Mapping | None = None,
+    ontology_source: str | None = None,
+    ontology_ref: str = "v0.2.0",
+    offline: bool = False,
+    packs: bool = True,
+    loinc_hierarchy: bool = False,
 )
 ```
 
-Select exactly one source. Parents expand through the root by default. Children
-and siblings are opt-in; `child_depth` accepts `1`–`100`. Existing parent codes
-are normalized to `VOCABULARY//CODE`, with the lookup concept itself excluded by
-default. Existing relationship lists are merged without duplicates and newly
-added codes must be valid in the selected source.
+Select at most one Athena source and/or `rules` (a path, mapping, or
+`OntologyRules`, parsed on construction). Without an Athena source, rules use
+the public ontology packs only; `packs=False` (which needs an Athena source)
+uses Athena only and skips crosswalk rules. Parents expand through the root by
+default; `loinc_hierarchy=True` (which needs `rules` and the packs) adds the
+LOINC Parts of the LOINC multiaxial hierarchy. Children and siblings are
+opt-in; `child_depth` accepts `1`–`100`. Existing relationship lists are kept
+verbatim and new entries appended without duplicates; every list gets an
+aligned names list (`parent_names` and so on), and existing parent references
+are named and their ancestors added.
+Newly added codes must be valid in the selected source.
 
 ### `enrich_metadata`
 
@@ -86,9 +100,38 @@ enrich_metadata(
 ) -> polars.LazyFrame
 ```
 
-Adds or fills Athena fields on an arbitrary lazy metadata or summary table.
-Existing scalar values are preserved and relationship lists are merged without
-replacement.
+Adds or fills Athena and rule fields on an arbitrary lazy metadata or summary
+table with a `code` column; rows whose boolean `is_masked` is true are not
+looked up. Existing scalar values are preserved and relationship lists are
+merged without replacement. See [How enrichment works](enrichment.md).
+
+### `load_rules(source) -> OntologyRules`
+
+Parses and strictly validates a `sumeds-rules/0.1` YAML file or mapping into
+frozen `OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. See
+[Rules and ontology packs](rules.md).
+
+### `OntologyPacks`
+
+```python
+OntologyPacks(
+    source: str | None = None,
+    ref: str = "v0.2.0",
+    *,
+    offline: bool = False,
+    cache_dir: str | Path | None = None,
+)
+```
+
+Fetches, verifies, and caches packs.
+`lookup(vocabulary, codes, *, child_depth=0, siblings=False, hierarchy=False)`
+returns a `PackEntry`
+(`description`, `ancestors`, `children`, `siblings`, and their aligned
+`ancestor_names`, `child_names`, `sibling_names`) for each code present in the
+pack, fetching only the shards it needs; `hierarchy=True` adds the ancestors of
+a pack's separate hierarchy (LOINC Parts); `crosswalk("dataset/name")` returns the
+verified rows of a crosswalk table; `stats` counts shards used and downloaded.
+Integrity and fetch errors raise `OntologyPackError`.
 
 ### `enrich_file`
 
@@ -107,7 +150,8 @@ differ. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
 are necessarily eager because Polars provides no `scan_json` equivalent.
 `verbose=True` shows phase progress and prints before/after field coverage; the
 `suMEDS-enrich` CLI enables it by default. See
-[Athena enrichment](enrichment.md) for source and parsing details.
+[How enrichment works](enrichment.md) and [Athena enrichment](athena.md) for
+source and parsing details.
 
 ## Lazy building blocks
 

@@ -9,7 +9,9 @@ discover and define downstream tasks:
 - optional counts per canonical subject split, as rows or columns beside totals;
 - configurable masking or removal of rare code cells;
 - optional descriptions, ancestor/descendant/sibling codes, domains, and concept
-  identifiers from OHDSI Athena CSV files or PostgreSQL.
+  identifiers from OHDSI Athena CSV files or PostgreSQL, and from regex rules
+  over public ontology packs (ICD-10-CM, ICD-10-PCS, ICD-9, LOINC) fetched on
+  demand.
 
 ## Data flow
 
@@ -18,7 +20,7 @@ metadata/dataset.json ── code modifier declaration ─┐
 data/**/*.parquet ── projected lazy scan ── counts ├─ privacy policy ── Parquet
 metadata/codes.parquet ── descriptions/parents ─────┤
 metadata/subject_splits.parquet ── optional split ──┤ Parquet / CSV / JSON
-Athena CSV/PostgreSQL ── optional released-code enrichment ──┘
+Athena / rules + ontology packs ── optional released-code enrichment ──┘
 ```
 
 Only `subject_id`, `code`, declared code modifiers, and optionally `split` are
@@ -33,4 +35,6 @@ included MIMIC-IV demo identifies itself as MEDS 0.3.3 and remains compatible
 with the fields used by this package.
 
 Start with [Usage](usage.md), then review the [privacy model](privacy.md) before
-sharing an output.
+sharing an output. [How enrichment works](enrichment.md) explains the optional
+metadata enrichment, with [Athena](athena.md) and with
+[rules and ontology packs](rules.md).

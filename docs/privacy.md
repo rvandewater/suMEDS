@@ -11,9 +11,12 @@ For each output scope, codes below `min_subjects` unique subjects are either:
 - combined into one row (`bucket`).
 
 A masked row contains no code description, parent relationships, modifier
-values, or metadata extensions. Optional Athena lookup runs after masking, so
-source codes represented by a rare bucket are never sent to PostgreSQL or
-restored from local vocabulary files. The output never contains subject
+values, or metadata extensions. Optional Athena and ontology-rule lookup runs
+after masking, so source codes represented by a rare bucket are never sent to
+PostgreSQL, matched by rules, or restored from local vocabulary files. Pack
+fetching requests only vocabulary shards (named by the first one or two
+characters of vocabulary codes) and crosswalk tables, never dataset codes, and
+hierarchy rules only link codes that are already released. The output never contains subject
 identifiers, event timestamps, raw text values, numeric values, or extrema.
 
 With row-per-split summaries, `min_subjects` is applied independently within

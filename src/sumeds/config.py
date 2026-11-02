@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Mapping, TypeVar
 
 import yaml
+
+from .ontology import DEFAULT_REF, OntologyRules, load_rules
 
 NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci")
 _NUMERIC_ALIASES = {"avg": "mean"}
@@ -23,7 +25,14 @@ def _with_overrides(self: _Config, **values: Any) -> _Config:
 
 @dataclass(frozen=True)
 class EnrichmentConfig:
-    """Select one OHDSI Athena source and hierarchy fields to add."""
+    """Select enrichment sources and the hierarchy fields to add.
+
+    Set at most one OHDSI Athena source (``csv_dir`` or ``postgres``) and/or a
+    ``rules`` file (path, mapping, or :class:`OntologyRules`). Without Athena,
+    rules use the public ontology packs only; with ``packs: false``, rules use
+    Athena only and crosswalk rules are skipped. ``loinc_hierarchy`` adds the
+    LOINC Parts of the LOINC multiaxial hierarchy pack as parents of LOINC codes.
+    """
 
     csv_dir: Path | None = None
     postgres: str | None = None
@@ -31,13 +40,46 @@ class EnrichmentConfig:
     child_codes: bool = False
     sibling_codes: bool = False
     child_depth: int = 3
-    exclude_self_parent_code: bool = True
+    exclude_self_parent_code: bool = False
+    rules: OntologyRules | None = None
+    ontology_source: str | None = None
+    ontology_ref: str = DEFAULT_REF
+    offline: bool = False
+    packs: bool = True
+    loinc_hierarchy: bool = False
 
     def __post_init__(self) -> None:
-        if (self.csv_dir is None) == (self.postgres is None):
+        if self.csv_dir is not None and self.postgres is not None:
             raise ValueError(
                 "set exactly one of enrichment.csv_dir or enrichment.postgres"
             )
+        if isinstance(self.rules, (str, Path, Mapping)):
+            object.__setattr__(self, "rules", load_rules(self.rules))
+        elif self.rules is not None and not isinstance(self.rules, OntologyRules):
+            raise ValueError("enrichment.rules must be a path to a rules file")
+        if self.csv_dir is None and self.postgres is None and self.rules is None:
+            raise ValueError(
+                "set exactly one of enrichment.csv_dir or enrichment.postgres, "
+                "or enrichment.rules to use the public ontology packs only"
+            )
+        if self.packs is False and self.csv_dir is None and self.postgres is None:
+            raise ValueError(
+                "enrichment.packs: false needs an Athena source "
+                "(enrichment.csv_dir or enrichment.postgres)"
+            )
+        if isinstance(self.ontology_source, Path):
+            object.__setattr__(self, "ontology_source", str(self.ontology_source))
+        if self.ontology_source is not None and (
+            not isinstance(self.ontology_source, str)
+            or not self.ontology_source.strip()
+        ):
+            raise ValueError("enrichment.ontology_source must be a URL or directory")
+        if (
+            not isinstance(self.ontology_ref, str)
+            or not self.ontology_ref
+            or any(character.isspace() for character in self.ontology_ref)
+        ):
+            raise ValueError("enrichment.ontology_ref must be a git ref")
         if self.csv_dir is not None:
             if (
                 not isinstance(self.csv_dir, (str, Path))
@@ -54,6 +96,9 @@ class EnrichmentConfig:
             "child_codes",
             "sibling_codes",
             "exclude_self_parent_code",
+            "offline",
+            "packs",
+            "loinc_hierarchy",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"enrichment.{name} must be true or false")
@@ -63,6 +108,11 @@ class EnrichmentConfig:
             or not 1 <= self.child_depth <= 100
         ):
             raise ValueError("enrichment.child_depth must be an integer from 1 to 100")
+        if self.loinc_hierarchy and (self.rules is None or not self.packs):
+            raise ValueError(
+                "enrichment.loinc_hierarchy needs enrichment.rules and the ontology "
+                "packs (packs: true); without them it would add nothing"
+            )
 
     with_overrides = _with_overrides
 
@@ -159,10 +209,12 @@ class SummaryConfig:
             )
         enrichment_config = None
         if enrichment:
-            csv_dir = enrichment.get("csv_dir")
-            # Invalid values are left for EnrichmentConfig to reject.
-            if isinstance(csv_dir, str) and csv_dir.strip():
-                enrichment["csv_dir"] = source.parent / Path(csv_dir).expanduser()
+            # Relative paths are resolved against the YAML file; invalid values
+            # are left for EnrichmentConfig to reject.
+            for name in ("csv_dir", "rules", "ontology_source"):
+                value = enrichment.get(name)
+                if isinstance(value, str) and value.strip() and "://" not in value:
+                    enrichment[name] = source.parent / Path(value).expanduser()
             enrichment_config = EnrichmentConfig(**enrichment)
         values: dict[str, Any] = {
             **summary,
