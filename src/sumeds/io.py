@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from uuid import uuid4
 
+import meds
 import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 #: List columns that CSV stores as JSON arrays rather than ``|``-joined text,
 #: because names can contain ``|`` and can be missing.
@@ -62,7 +67,7 @@ def sink_table(
     path = Path(path)
     format_ = format_ or output_format(path)
     if format_ == "parquet":
-        frame.sink_parquet(path)
+        _sink_meds_parquet(frame, path)
     elif format_ == "csv":
         schema = frame.collect_schema()
         nested = []
@@ -104,3 +109,40 @@ def sink_table(
                 target.write(b"]\n")
         finally:
             lines.unlink(missing_ok=True)
+
+
+def _meds_output_schema(schema: pa.Schema) -> pa.Schema:
+    """Give the MEDS code-metadata columns of ``schema`` their MEDS Arrow types.
+
+    Polars writes every string as ``large_string`` and every list as ``large_list``,
+    but the MEDS schema requires ``string`` and ``list<string>``, and
+    ``meds.CodeMetadataSchema.validate`` rejects the large variants. Other columns
+    keep their type.
+    """
+
+    expected = {field.name: field.type for field in meds.CodeMetadataSchema.schema()}
+    return pa.schema(
+        [field.with_type(expected.get(field.name, field.type)) for field in schema]
+    )
+
+
+def _sink_meds_parquet(frame: pl.LazyFrame, path: Path) -> None:
+    """Stream ``frame`` to Parquet with the MEDS types of :func:`_meds_output_schema`.
+
+    Polars cannot write the narrower types, so the frame is streamed to a staged
+    file and re-encoded one record batch at a time, keeping memory bounded.
+    """
+
+    staged = path.with_name(f".{path.name}.{uuid4().hex}.polars.parquet")
+    try:
+        frame.sink_parquet(staged)
+        with pq.ParquetFile(staged) as source:
+            schema = _meds_output_schema(source.schema_arrow)
+            if not schema.equals(source.schema_arrow):
+                with pq.ParquetWriter(path, schema, compression="zstd") as writer:
+                    for batch in source.iter_batches():
+                        writer.write_table(pa.Table.from_batches([batch]).cast(schema))
+                return
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)

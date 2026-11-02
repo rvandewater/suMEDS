@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import meds
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -471,6 +472,38 @@ def test_standalone_handles_csv_and_null_columns(
         "SNOMED//PARENT",
         "SNOMED//ROOT",
     ]
+
+
+def test_parquet_outputs_have_meds_types(meds_dataset: Path, tmp_path: Path) -> None:
+    """Polars writes ``large_string``; MEDS-valid input must stay MEDS-valid."""
+
+    source = meds_dataset / "metadata" / "codes.parquet"
+    meds.CodeMetadataSchema.validate(pq.read_table(source))
+    rules = {
+        "schema": "sumeds-rules/0.1",
+        "hierarchy": [
+            {
+                "id": "path",
+                "pattern": r"^(?P<path>.+)$",
+                "group": "path",
+                "mode": "separator",
+                "separator": "//",
+            }
+        ],
+    }
+    enriched = enrich_file(
+        source, tmp_path / "enriched.parquet", EnrichmentConfig(rules=rules)
+    )
+    table = pq.read_table(enriched)
+    meds.CodeMetadataSchema.validate(table)
+    assert table.num_rows == pq.read_metadata(source).num_rows
+
+    summary = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=1)
+    )
+    schema = pq.read_schema(summary)
+    assert schema.field("code").type == pa.string()
+    assert schema.field("parent_codes").type == pa.list_(pa.string())
 
 
 def test_standalone_cli(athena_csv: Path, tmp_path: Path, capsys) -> None:

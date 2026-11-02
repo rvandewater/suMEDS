@@ -109,7 +109,10 @@ summary table without running a summary. See
 
 The filename suffix selects the writer:
 
-- `.parquet`: native typed Parquet and the recommended default;
+- `.parquet`: native typed Parquet and the recommended default. `code`,
+  `description`, and `parent_codes` are written with the MEDS types (`string`,
+  `list<string>`), so an enriched `codes.parquet` passes
+  `meds.CodeMetadataSchema.validate`;
 - `.csv`: standard CSV; list columns are pipe-delimited and struct columns are JSON strings;
 - `.json`: one valid JSON array assembled with bounded memory;
 - `.jsonl` or `.ndjson`: newline-delimited JSON for direct streaming.
