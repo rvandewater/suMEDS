@@ -2195,7 +2195,7 @@ wheels = [
 
 [[package]]
 name = "sumeds"
-version = "0.5.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "meds" },
