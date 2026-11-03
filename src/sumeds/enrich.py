@@ -89,10 +89,12 @@ def enrich_metadata(frame: pl.LazyFrame, config: EnrichmentConfig) -> pl.LazyFra
     Codes are resolved by the configured rules first (ontology, then crosswalk
     rules, in file order), then as ``VOCABULARY//CODE//...`` or ``VOCABULARY/CODE``.
     For an ambiguous three-part code, the third component is tried only when the
-    second has no valid match, supporting ``VOCABULARY//VERSION//CODE``. The first
-    existing ``VOCABULARY/CODE`` parent reference is the final fallback. Every
-    existing parent reference is also looked up: it gets its name in
-    ``parent_names`` and its ancestors are added as parents.
+    second has no valid match, supporting ``VOCABULARY//VERSION//CODE``. The
+    existing ``VOCABULARY/CODE`` parent references are the final fallback, whatever
+    their order: the valid one first by vocabulary and code (packs) or with the
+    lowest concept_id (Athena) is used. Every existing parent reference is also
+    looked up: it gets its name in ``parent_names`` and its ancestors are added as
+    parents.
     """
 
     return _enrich(frame, config)
@@ -142,8 +144,11 @@ def _enrich(
             present = existing.is_not_null() | incoming.is_not_null()
             if name == "parent_codes":
                 if config.exclude_self_parent_code:
-                    # Drop the reference _code_candidates matched: first non-null.
-                    remaining = existing.list.drop_nulls().list.slice(1)
+                    # Drop the parent reference the code was matched by.
+                    matched = pl.concat_str(
+                        "_athena_vocabulary_id", "_athena_concept_code", separator="//"
+                    )
+                    remaining = _without_reference(existing, matched)
                     matched_by_parent = pl.col(_MATCH_RANK) == parent_rank
                     present = (
                         pl.when(matched_by_parent)
@@ -259,6 +264,35 @@ def _append_new(
     )
 
 
+def _without_reference(parents: pl.Expr, reference: pl.Expr) -> pl.Expr:
+    """The non-null ``parents`` other than those naming ``reference``, in order.
+
+    ``reference`` is ``VOCABULARY//CODE``; a parent names it when its vocabulary and
+    code components match, in either spelling. ``list.eval`` cannot see other columns,
+    so ``reference`` travels inside the list as a marked last element.
+    """
+
+    def tagged(values: pl.Expr, is_reference: bool) -> pl.Expr:
+        return values.list.eval(
+            pl.struct(
+                value=pl.element(),
+                key=_components(pl.element()).list.head(2).list.join("//"),
+                reference=pl.lit(is_reference),
+            )
+        )
+
+    entry = pl.element().struct
+    target = entry.field("key").filter(entry.field("reference")).first()
+    return pl.concat_list(
+        tagged(parents.list.drop_nulls(), False),
+        tagged(pl.concat_list(reference), True),
+    ).list.eval(
+        pl.element()
+        .filter(~entry.field("reference") & (entry.field("key") != target))
+        .struct.field("value")
+    )
+
+
 def enrich_file(
     input_path: str | Path,
     output_path: str | Path,
@@ -266,12 +300,15 @@ def enrich_file(
     *,
     verbose: bool = False,
 ) -> Path:
-    """Atomically enrich a standalone table, optionally reporting coverage."""
+    """Atomically enrich a standalone table, optionally reporting coverage.
+
+    ``output_path`` may be ``input_path``: the enriched table is written to a staged
+    file first and replaces the input only once it is complete, so a failed
+    enrichment leaves the input as it was.
+    """
 
     input_path = Path(input_path).expanduser().resolve()
     output_path = Path(output_path).expanduser().resolve()
-    if input_path == output_path:
-        raise ValueError("standalone enrichment output must differ from its input")
     format_ = output_format(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     staged = output_path.with_name(
@@ -296,11 +333,13 @@ def enrich_file(
             progress.update()
             progress.set_description("Writing output")
             sink_table(enriched, staged, format_)
+            # Measured before the replace, which in place overwrites the input.
+            before = _coverage(source) if verbose else None
             staged.replace(output_path)
             progress.update()
             if verbose:
                 progress.set_description("Calculating coverage")
-                report = _coverage(source), _coverage(scan_table(output_path))
+                report = before, _coverage(scan_table(output_path))
             progress.update()
         finally:
             staged.unlink(missing_ok=True)
@@ -579,10 +618,14 @@ def _code_candidates(frame: pl.LazyFrame, offset: int = 0) -> pl.LazyFrame:
     ]
     schema = frame.collect_schema()
     parent_type = schema.get("parent_codes")
+    # Every parent reference is a candidate at the same rank, so the parent order
+    # does not decide the match: MEDS gives parent_codes no order, and MEDS-Extract
+    # collects it with a union whose order changes from run to run. Ties are
+    # broken by vocabulary and code (packs) or by the lowest concept_id (Athena).
     if isinstance(parent_type, pl.List) and parent_type.inner == pl.String:
-        reference = pl.col("parent_codes").list.drop_nulls().list.first()
+        reference = pl.col("parent_codes")
     elif parent_type == pl.String:
-        reference = pl.col("parent_codes").str.split("|").list.first()
+        reference = pl.col("parent_codes").str.split("|")
     else:
         reference = None
     if reference is not None:
@@ -606,8 +649,11 @@ def _code_candidates(frame: pl.LazyFrame, offset: int = 0) -> pl.LazyFrame:
             frame.select(
                 code.alias("_target_code"),
                 _components(code).alias("_own"),
-                _components(reference).alias("_parts"),
+                reference.alias("_reference"),
             )
+            .explode("_reference")
+            .drop_nulls("_reference")
+            .with_columns(_components(pl.col("_reference")).alias("_parts"))
             .filter(~same_vocabulary | same_code)
             .unique()
         )
@@ -786,7 +832,9 @@ def _athena_enrichment(
     keys = sorted({key for values in references.values() for key in values})
     candidates = pl.concat([_code_candidates(released), _reference_candidates(keys)])
     matches, found = _split_references(
-        _collapse_matches(_athena_matches(candidates, config)).collect()
+        _collapse_matches(
+            _athena_matches(candidates, config), _PARENT_REFERENCE_RANK
+        ).collect()
     )
     records = {
         row["code"]: {
@@ -906,7 +954,9 @@ def _rule_enrichment(
             [rule_candidates, layouts.lazy(), _reference_candidates(reference_keys)]
         )
         collapsed, found_athena = _split_references(
-            _collapse_matches(_athena_matches(candidates, config)).collect()
+            _collapse_matches(
+                _athena_matches(candidates, config), offset + _PARENT_REFERENCE_RANK
+            ).collect()
         )
         athena = {row["code"]: row for row in collapsed.iter_rows(named=True)}
 
@@ -1521,10 +1571,18 @@ ORDER BY m._target_code, m.concept_id, r._relationship,
     ).lazy()
 
 
-def _collapse_matches(matches: pl.LazyFrame) -> pl.LazyFrame:
+def _collapse_matches(matches: pl.LazyFrame, parent_rank: int) -> pl.LazyFrame:
     best = matches.with_columns(
         pl.col("_rank").min().over("_target_code").alias("_best_rank")
     ).filter(pl.col("_rank") == pl.col("_best_rank"))
+    # Parent references share one rank. The first by vocabulary and code wins, as
+    # with packs, so that every setup picks the same one whatever the parent order.
+    reference = pl.when(pl.col("_rank") == parent_rank).then(
+        pl.concat_str("vocabulary_id", "concept_code", separator="//")
+    )
+    best = best.filter(
+        reference.is_null() | (reference == reference.min().over("_target_code"))
+    )
     chosen = best.with_columns(
         pl.col("concept_id").min().over("_target_code").alias("_chosen_concept_id")
     ).filter(pl.col("concept_id") == pl.col("_chosen_concept_id"))

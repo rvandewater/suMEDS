@@ -77,13 +77,16 @@ environment changed after Jupyter started.
 Athena receives the candidates that [How enrichment
 works](enrichment.md#how-a-code-is-enriched) lists for each code. These are
 rule codes, the built-in `VOCABULARY//CODE` and `VOCABULARY/CODE` layouts, and
-the first existing parent reference. Every existing parent reference is also
+every existing parent reference. Every existing parent reference is also
 looked up in the same batch. A candidate matches a `CONCEPT` row with the same
 `vocabulary_id` and `concept_code` and an empty `invalid_reason`. Standard,
 classification and non-standard concepts all match; retired and replaced
 concepts do not. For example, the July 2026 download marks 1,849 ICD-10-CM
 concepts invalid, so those codes are not matched. The best-ranked matching
-candidate wins. If it matches several concepts, the lowest `concept_id` wins.
+candidate wins. Parent references share one rank: of those that match, the
+first by vocabulary and code wins, as with packs, whatever their order in the
+list. Otherwise, if the best rank matches several concepts, the lowest
+`concept_id` wins.
 
 The comparison is exact, so the code must be in OMOP's `concept_code` format:
 
@@ -92,15 +95,14 @@ The comparison is exact, so the code must be in OMOP's `concept_code` format:
   that inserts the dot.
 - OMOP-style codes with single slashes (`LOINC/2160-0`, `UCUM/mg/dL`) are split
   at their first slash.
-- The first parent reference identifies a code only when the code does not
-  name another code of the same vocabulary. `LOINC/2160-0` under
+- A parent reference identifies a code only when the code does not name
+  another code of the same vocabulary. `LOINC/2160-0` under
   `LOINC/LP14355-9` is never matched as the Part, even when `2160-0` is
   missing from your download.
 
-All existing parent references are looked up, not only the first. In the eICU
-example, a diagnosis code with the parents `ICD9CM/428.40` and
-`ICD10CM/I50.40` is matched as ICD-9-CM `428.40`. Both references get their
-names, and the ancestors of both are added.
+In the eICU example, a diagnosis code with the parents `ICD9CM/428.40` and
+`ICD10CM/I50.40`, in either order, is matched as ICD-10-CM `I50.40`. Both
+references get their names, and the ancestors of both are added.
 
 ## What Athena adds
 
@@ -239,7 +241,7 @@ the same `concept_code` and the same set of parents.
 |---|---|---|
 | Vocabularies | every vocabulary in your download | ICD-10-CM, ICD-10-PCS, ICD-9-CM, ICD-9 procedures, LOINC |
 | Releases | those of your download (July 2026: ICD-10-CM FY2026, ICD-9 v32, LOINC 2.80) | ICD-10-CM and ICD-10-PCS FY2016 to FY2027, including retired codes; ICD-9 v32; LOINC 2.83 |
-| Codes matched | rule codes, built-in layouts, first parent reference | the same, in vocabularies with a pack |
+| Codes matched | rule codes, built-in layouts, parent references | the same, in vocabularies with a pack |
 | Existing parent references | named, ancestors added | named, ancestors added |
 | `concept_id`, `domain_id`, `standard_concept` | yes | no |
 | Names | `concept_name`, at most 255 characters | official descriptions; LOINC `LONG_COMMON_NAME` |

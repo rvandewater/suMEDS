@@ -1277,17 +1277,22 @@ def test_packs_resolve_layouts_and_parent_references(
     assert layout["vocabulary_id"] == "ICD10CM" and layout["concept_code"] == "I50.23"
     assert layout["description"].startswith("Acute on chronic")
     assert layout["parent_codes"] == ["ICD10CM//I50.2", "ICD10CM//I50"]
-    # The first parent reference identifies the code, as with Athena; every
-    # reference is named and its ancestors follow, before same-table parents.
+    # The valid parent reference first by vocabulary and code identifies the code,
+    # whatever the parent order; every reference is named and its ancestors
+    # follow, before same-table parents.
     chf = rows["DX//chf"]
-    assert chf["concept_code"] == "I50.23"
+    assert chf["concept_code"] == "A04.72"
+    reversed_parents = frame.with_columns(pl.col("parent_codes").list.reverse())
+    reversed_rows = _enrich(reversed_parents, packs, HIERARCHY_ONLY)
+    assert reversed_rows["DX//chf"]["concept_code"] == "A04.72"
+    # The matched reference's ancestors come first.
     assert chf["parent_codes"] == [
         "ICD10CM/I50.23",
         "ICD10CM/A04.72",
-        "ICD10CM//I50.2",
-        "ICD10CM//I50",
         "ICD10CM//A04.7",
         "ICD10CM//A04",
+        "ICD10CM//I50.2",
+        "ICD10CM//I50",
     ]
     assert chf["parent_names"][:2] == [
         "Acute on chronic systolic (congestive) heart failure",
@@ -1310,10 +1315,11 @@ def test_packs_resolve_layouts_and_parent_references(
     ]
     assert parts["LOINC/2160-0"]["parent_names"][0] == "Chemistry"
 
+    # The matched reference is the one excluded, wherever it is in the list.
     excluded = _enrich(frame, packs, HIERARCHY_ONLY, exclude_self_parent_code=True)
     assert excluded["DX//chf"]["parent_codes"][:2] == [
-        "ICD10CM/A04.72",
-        "ICD10CM//I50.2",
+        "ICD10CM/I50.23",
+        "ICD10CM//A04.7",
     ]
 
     source = tmp_path / "codes.parquet"

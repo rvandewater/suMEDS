@@ -31,7 +31,7 @@ These combine into four setups:
 
 - **Athena only**: `--athena-csv DIR` or `--athena-postgres CONNINFO`.
   Resolves codes in a `VOCABULARY//CODE` or `VOCABULARY/CODE` layout, and
-  codes whose first existing parent is a vocabulary reference.
+  codes with an existing parent that is a vocabulary reference.
 - **Packs only**: `--rules rules.yaml`. Resolves the same codes for the
   vocabularies that have a pack, and codes that a rule maps to a pack
   vocabulary, directly or through a crosswalk table.
@@ -50,7 +50,7 @@ Enrichment works on the unique codes of the table, in nine steps.
 ```text
 code
   │  candidates, best first: ontology rules, crosswalk rules,
-  │  VOCABULARY//CODE, VOCABULARY//VERSION//CODE, first parent
+  │  VOCABULARY//CODE, VOCABULARY//VERSION//CODE, parent references
   ▼
 validation: Athena CONCEPT, a pack, or a tag (validate: none)
   ▼
@@ -155,19 +155,22 @@ and has no parents. Only the crosswalk rule can resolve it: the key
 **A diagnosis code**,
 `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure|combined systolic and diastolic`,
 has the existing parents `ICD9CM/428.40` and `ICD10CM/I50.40`. `DIAGNOSIS` is
-not a vocabulary, so the first parent reference identifies the code. Every
-setup gives it the same result:
+not a vocabulary, so a parent reference identifies the code. Both are valid,
+and `ICD10CM//I50.40` comes first by vocabulary and code, whatever the order of
+the list (MEDS-Extract's union does not keep it fixed). Every setup gives it
+the same result:
 
-- The description is that concept's name, "Combined systolic and diastolic
-  heart failure, unspecified", with `vocabulary_id` ICD9CM and `concept_code`
-  428.40. With Athena, it also gets `concept_id` 44832381 and `domain_id`
-  Observation.
+- The description is that concept's name, "Unspecified combined systolic
+  (congestive) and diastolic (congestive) heart failure", with `vocabulary_id`
+  ICD10CM and `concept_code` I50.40. With Athena, it also gets that concept's
+  `concept_id` and `domain_id`.
 - Both existing references keep their place and get their names.
-- Their ancestors are appended: `ICD9CM//428.4` (Combined systolic and
-  diastolic heart failure), `ICD9CM//428` (Heart failure), `ICD10CM//I50.4`
-  (Combined systolic (congestive) and diastolic (congestive) heart failure)
-  and `ICD10CM//I50` (Heart failure). Athena sorts each reference's ancestors
-  by code; the packs list them nearest first.
+- Their ancestors are appended: `ICD10CM//I50.4` (Combined systolic
+  (congestive) and diastolic (congestive) heart failure), `ICD10CM//I50`
+  (Heart failure), `ICD9CM//428.4` (Combined systolic and diastolic heart
+  failure) and `ICD9CM//428` (Heart failure). Athena sorts each reference's
+  ancestors by code; the packs list them nearest first, the matched
+  reference's first.
 - With the rules file, the separator hierarchy rule appends the same-table
   parent `DIAGNOSIS//cardiovascular|ventricular disorders|congestive heart failure`.
 
@@ -338,7 +341,7 @@ Enrichment report
   validated all 50 LOINC codes, so no code needed the pack. The pack was still
   read for its hierarchy.
 - **Built-in layouts and parent reference**: codes that no rule matched but a
-  built-in layout or the first parent reference did, by source.
+  built-in layout or a parent reference did, by source.
 - **Hierarchy rules**: same-table parents added per rule.
 - **Ontology files used**: the pack, hierarchy and crosswalk files read, out
   of those available, and how many were downloaded. With the default source,
