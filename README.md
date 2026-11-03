@@ -94,7 +94,9 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
 ```
 
 The standalone command shows phase progress and reports Athena matches and
-before/after metadata coverage.
+before/after metadata coverage. Pass the input as `-o` to enrich it in place,
+for example a MEDS dataset's `metadata/codes.parquet`; the input is replaced only
+once the enriched table is complete.
 
 The `VOCABULARY//CODE//...`, `VOCABULARY//VOCABULARY_VERSION//CODE` and
 OMOP-style `VOCABULARY/CODE` layouts are resolved, and so is a code's first

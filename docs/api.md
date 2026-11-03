@@ -145,8 +145,10 @@ enrich_file(
 ) -> Path
 ```
 
-Atomically enriches a supported standalone table. Input and output paths must
-differ. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
+Atomically enriches a supported standalone table. The output path may be the
+input path, to enrich a table in place, such as a MEDS dataset's
+`metadata/codes.parquet`: the result is staged and replaces the input only once
+complete. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
 are necessarily eager because Polars provides no `scan_json` equivalent.
 `verbose=True` shows phase progress and prints before/after field coverage; the
 `suMEDS-enrich` CLI enables it by default. See

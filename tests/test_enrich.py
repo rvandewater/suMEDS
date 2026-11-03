@@ -636,6 +636,54 @@ def test_self_parent_exclusion_skips_leading_null(athena_csv: Path) -> None:
     assert row["parent_codes"] == ["KEEP", "SNOMED//BRANCH", "SNOMED//ROOT"]
 
 
+def test_parent_order_does_not_decide_the_match(athena_csv: Path) -> None:
+    """MEDS-Extract's union leaves the parent order to chance; the match must not follow it.
+
+    Both references are valid. The first by vocabulary and code wins, as with packs.
+    """
+    parents = ["SNOMED/PARENT", "KEEP", "LOINC/5803-2"]
+    for order in (parents, parents[::-1]):
+        frame = pl.LazyFrame({"code": ["LOCAL"], "parent_codes": [order]})
+        row = (
+            enrich_metadata(frame, EnrichmentConfig(csv_dir=athena_csv))
+            .collect()
+            .row(0, named=True)
+        )
+        assert (row["vocabulary_id"], row["concept_code"]) == ("LOINC", "5803-2")
+        assert row["parent_codes"][:3] == order  # existing parents stay verbatim
+
+        excluded = (
+            enrich_metadata(
+                frame,
+                EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=True),
+            )
+            .collect()
+            .row(0, named=True)
+        )
+        # The matched reference is dropped wherever it is; the others keep their order.
+        assert excluded["parent_codes"][:2] == [p for p in order if p != "LOINC/5803-2"]
+
+
+def test_standalone_enriches_in_place(athena_csv: Path, tmp_path: Path, capsys) -> None:
+    source = tmp_path / "codes.parquet"
+    pl.DataFrame(
+        {
+            "code": ["LAB//51491//units", "CMS Place of Service//02//end"],
+            "parent_codes": [["LOINC/5803-2"], None],
+        }
+    ).write_parquet(source)
+    copy = tmp_path / "enriched.parquet"
+    enrich_file(source, copy, EnrichmentConfig(csv_dir=athena_csv))
+
+    enrich_file(source, source, EnrichmentConfig(csv_dir=athena_csv), verbose=True)
+
+    assert pl.read_parquet(source).equals(pl.read_parquet(copy))
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+    # The coverage report compares the input as it was, before the replace.
+    report = capsys.readouterr().out
+    assert "Athena matches added:      2 rows, 2 unique codes" in report
+
+
 def _athena_icd(directory: Path) -> Path:
     directory.mkdir()
     concepts = [

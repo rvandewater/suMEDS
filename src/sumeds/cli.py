@@ -134,7 +134,11 @@ def build_enrich_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input", type=Path, help="metadata or summary table")
     parser.add_argument(
-        "-o", "--output", type=Path, required=True, help="enriched output table"
+        "-o",
+        "--output",
+        type=Path,
+        required=True,
+        help="enriched output table; may be the input, to enrich it in place",
     )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument("--athena-csv", type=Path, help="Athena CSV directory")

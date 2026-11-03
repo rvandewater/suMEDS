@@ -145,9 +145,9 @@ siblings. Athena already gives LOINC codes a broader set of ancestors through
 ## Hierarchy rules
 
 Hierarchy rules add parents that are codes of the same (released) table. They
-are appended after the vocabulary parents, so the first parent stays the
-vocabulary reference that the parent-reference fallback relies on. Hierarchy
-rules never add a code that is not in the table, never the code itself, and
+are appended after the vocabulary parents. They name no vocabulary, so when a
+table is enriched again, the parent-reference fallback never matches them.
+Hierarchy rules never add a code that is not in the table, never the code itself, and
 run only when `parent_codes` is enabled. Their entries have no name in
 `parent_names`, because the parent's own row carries its description.
 
@@ -195,8 +195,9 @@ documents the format, sizes, sources, and rebuild commands, and its README
 cites the source of every crosswalk.
 
 Packs are consulted for rule candidates and also, in vocabularies with a pack,
-for the built-in layouts (`ICD10CM//I50.23`), the first parent reference, and
-every existing parent reference (`ICD9CM/428.0`), as Athena is. So a dataset
+for the built-in layouts (`ICD10CM//I50.23`) and every existing parent
+reference (`ICD9CM/428.0`), both to identify the code and for the reference's
+name and ancestors, as Athena is. So a dataset
 whose codes already carry ICD references gets their names and ancestors from
 the packs alone. Because of this, suMEDS reads the pack index whenever packs
 are enabled and a code has a layout or a parent reference.
