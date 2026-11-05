@@ -8,7 +8,7 @@ from typing import Any, Mapping, TypeVar
 
 import yaml
 
-from .ontology import DEFAULT_REF, OntologyRules, load_rules
+from .ontology import DEFAULT_REF, OntologyRules, load_rules, registered_rules
 
 NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci")
 _NUMERIC_ALIASES = {"avg": "mean"}
@@ -28,7 +28,7 @@ class EnrichmentConfig:
     """Select enrichment sources and the hierarchy fields to add.
 
     Set at most one OHDSI Athena source (``csv_dir`` or ``postgres``) and/or a
-    ``rules`` file (path, mapping, or :class:`OntologyRules`). Without Athena,
+    ``rules`` file (path, registered name, mapping, or :class:`OntologyRules`). Without Athena,
     rules use the public ontology packs only; with ``packs: false``, rules use
     Athena only and crosswalk rules are skipped. ``loinc_hierarchy`` adds the
     LOINC Parts of the LOINC multiaxial hierarchy pack as parents of LOINC codes.
@@ -210,9 +210,12 @@ class SummaryConfig:
         enrichment_config = None
         if enrichment:
             # Relative paths are resolved against the YAML file; invalid values
-            # are left for EnrichmentConfig to reject.
+            # are left for EnrichmentConfig to reject. A registered rules name
+            # (see `registered_rules`) is a name, not a path.
             for name in ("csv_dir", "rules", "ontology_source"):
                 value = enrichment.get(name)
+                if name == "rules" and value in registered_rules():
+                    continue
                 if isinstance(value, str) and value.strip() and "://" not in value:
                     enrichment[name] = source.parent / Path(value).expanduser()
             enrichment_config = EnrichmentConfig(**enrichment)
