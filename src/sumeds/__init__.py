@@ -2,7 +2,7 @@
 
 from .config import EnrichmentConfig, SummaryConfig
 from .enrich import enrich_file, enrich_metadata
-from .ontology import OntologyPacks, OntologyRules, load_rules
+from .ontology import OntologyPacks, OntologyRules, load_rules, registered_rules
 from .scan import (
     code_modifier_columns,
     dataset_root,
@@ -27,6 +27,7 @@ __all__ = [
     "event_files",
     "load_rules",
     "read_dataset_metadata",
+    "registered_rules",
     "scan_code_metadata",
     "scan_events",
     "scan_subject_splits",

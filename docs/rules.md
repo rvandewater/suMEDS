@@ -10,9 +10,11 @@ works](enrichment.md) describes where rules fit in the overall process.
 
 ## Rules file
 
-Pass a rules file with `--rules PATH` (to both `suMEDS` and `suMEDS-enrich`),
-`enrichment.rules` in YAML (relative to the YAML file), or
-`EnrichmentConfig(rules=...)` (a path, a mapping, or `load_rules(...)`). The
+Pass a rules file with `--rules PATH` (to `suMEDS`, `suMEDS-enrich` and
+`suMEDS-extract`), `enrichment.rules` in YAML (relative to the YAML file), or
+`EnrichmentConfig(rules=...)` (a path, a mapping, or `load_rules(...)`). Each
+of these also takes the name an installed package registered its rules under
+(see [Registering rules in a package](#registering-rules-in-a-package)). The
 format is strict. These are errors:
 
 - unknown keys and a wrong `schema`;
@@ -63,6 +65,27 @@ hierarchy:                           # parents that are codes of the same table
 
 Patterns are Python regular expressions applied with `re.search`, so anchor
 them with `^` and `$`.
+
+## Registering rules in a package
+
+An ETL package can ship its rules file and register it in the `sumeds.rules`
+entry-point group, in the same `<package.module>:<filename>` form MEDS-Extract
+uses for `MEDS_extract.pipelines`. Use the name the package's MEDS-Extract spec
+is registered under:
+
+```toml
+[project.entry-points."MEDS_extract.pipelines"]
+"MC-MED" = "MC_MED_MEDS.configs:event_configs.yaml"
+
+[project.entry-points."sumeds.rules"]
+"MC-MED" = "MC_MED_MEDS:sumeds_rules.yaml"
+```
+
+Once the package is installed, `--rules MC-MED`, `enrichment.rules: MC-MED` and
+`load_rules("MC-MED")` load that file, and `suMEDS-extract spec=MC-MED ...`
+uses it without a `--rules` (see [Usage](usage.md#run-an-etl-and-enrich-it)).
+A registered name takes precedence over a path of the same spelling, as for
+MEDS-Extract specs. `sumeds.registered_rules()` lists the registered names.
 
 ## Ontology and crosswalk rules
 

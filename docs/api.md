@@ -107,9 +107,16 @@ merged without replacement. See [How enrichment works](enrichment.md).
 
 ### `load_rules(source) -> OntologyRules`
 
-Parses and strictly validates a `sumeds-rules/0.1` YAML file or mapping into
-frozen `OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. See
+Parses and strictly validates a `sumeds-rules/0.1` YAML file, a mapping, or
+the name an installed package registered its rules under, into frozen
+`OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. See
 [Rules and ontology packs](rules.md).
+
+### `registered_rules() -> dict[str, str]`
+
+The rules files registered in the `sumeds.rules` entry-point group, as
+`{name: "package.module:file.yaml"}`. See
+[Registering rules in a package](rules.md#registering-rules-in-a-package).
 
 ### `OntologyPacks`
 

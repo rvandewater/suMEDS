@@ -24,12 +24,17 @@ import urllib.request
 import warnings
 from collections import deque
 from dataclasses import dataclass
+from importlib.metadata import entry_points
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
 
 RULES_SCHEMA = "sumeds-rules/0.1"
+#: Entry-point group in which a package registers its rules file under a name, usually the
+#: name its MEDS-Extract spec is registered under (``MEDS_extract.pipelines``).
+RULES_ENTRY_POINT_GROUP = "sumeds.rules"
 INDEX_SCHEMA = "sumeds-ontologies/0.1"
 PACK_SCHEMA = "sumeds-ontology-pack/0.1"
 CROSSWALK_SCHEMA = "sumeds-crosswalk/0.1"
@@ -223,14 +228,60 @@ class OntologyRules:
         return (*self.ontology, *self.crosswalk)
 
 
+def registered_rules() -> dict[str, str]:
+    """Rules files that installed packages register, as ``{name: "package.module:file.yaml"}``.
+
+    A package registers its rules in the ``sumeds.rules`` entry-point group, in the same
+    ``<package.module>:<filename>`` form MEDS-Extract uses for ``MEDS_extract.pipelines``::
+
+        [project.entry-points."sumeds.rules"]
+        "MC-MED" = "MC_MED_MEDS:sumeds_rules.yaml"
+    """
+
+    return {ep.name: ep.value for ep in entry_points(group=RULES_ENTRY_POINT_GROUP)}
+
+
+def registered_rules_path(name: str) -> Path:
+    """The rules file registered under ``name`` in the ``sumeds.rules`` entry-point group."""
+
+    registered = registered_rules()
+    if name not in registered:
+        available = ", ".join(sorted(registered)) or "none"
+        raise FileNotFoundError(
+            f"no rules registered under {name!r} in the {RULES_ENTRY_POINT_GROUP!r} entry-point "
+            f"group (registered: {available})"
+        )
+    module, _, filename = registered[name].partition(":")
+    if not module or not filename:
+        raise ValueError(
+            f"rules entry point {name!r} has value {registered[name]!r}; register it as "
+            "'<package.module>:<filename.yaml>', e.g. 'MC_MED_MEDS:sumeds_rules.yaml'"
+        )
+    path = Path(str(files(module) / filename))
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"rules entry point {name!r} points at {registered[name]!r}, but module "
+            f"{module!r} has no file {filename!r} (resolved to {path})"
+        )
+    return path
+
+
 def load_rules(source: str | Path | Mapping[str, Any]) -> OntologyRules:
-    """Load and strictly validate a ``sumeds-rules/0.1`` YAML file or mapping."""
+    """Load and strictly validate a ``sumeds-rules/0.1`` YAML file or mapping.
+
+    ``source`` is a mapping, the name a package registered its rules under (see
+    :func:`registered_rules`), or a path. A registered name takes precedence over a path,
+    as for MEDS-Extract specs.
+    """
 
     if isinstance(source, Mapping):
         raw: Any = dict(source)
         where = "rules"
     else:
-        path = Path(source).expanduser()
+        if str(source) in registered_rules():
+            path = registered_rules_path(str(source))
+        else:
+            path = Path(source).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"rules file not found: {path}")
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

@@ -136,6 +136,18 @@ hierarchy:
 uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet --rules rules.yaml
 ```
 
+An ETL package can register its rules file under its MEDS-Extract spec name
+(entry-point group `sumeds.rules`), so `--rules MC-MED` finds it. Then one
+command runs the ETL and enriches its metadata in place, with options for
+`suMEDS-enrich` after a `--`:
+
+```bash
+suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
+```
+
+See [Registering rules in a package](docs/rules.md#registering-rules-in-a-package)
+and [Run an ETL and enrich it](docs/usage.md#run-an-etl-and-enrich-it).
+
 Codes are validated against ontology packs kept in a separately versioned
 data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard
 on demand from a pinned release tag (default `v0.2.0`, with the sha256 of its

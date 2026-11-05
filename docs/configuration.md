@@ -163,7 +163,9 @@ reference used to match the Athena concept itself. CLI equivalents are
 [How enrichment works](enrichment.md) for the process, hierarchy semantics
 and output fields, and [Athena enrichment](athena.md) for the Athena sources.
 
-`rules` (CLI `--rules`) is resolved relative to the YAML file.
+`rules` (CLI `--rules`) is resolved relative to the YAML file, unless it is
+the name an installed package registered its rules under (see
+[Registering rules in a package](rules.md#registering-rules-in-a-package)).
 `ontology_source` (CLI `--ontology-source`; default: the
 `SUMEDS_ONTOLOGY_SOURCE` environment variable, else the
 `rvandewater/sumeds-ontologies` GitHub repository) is an `http(s)://` or

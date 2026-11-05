@@ -101,9 +101,37 @@ Optional enrichment accepts at most one local or PostgreSQL Athena source
 and/or a `--rules` file validated against the public ontology packs. Use
 `suMEDS-enrich INPUT -o OUTPUT` (the same source, hierarchy, and ontology
 flags; `--no-verbose` hides its report) to enrich an existing metadata or
-summary table without running a summary. See
-[How enrichment works](enrichment.md), [Athena enrichment](athena.md), and
+summary table without running a summary. Passing the input as `-o` enriches
+it in place; the input is replaced only once the enriched table is complete.
+See [How enrichment works](enrichment.md), [Athena enrichment](athena.md), and
 [Rules and ontology packs](rules.md).
+
+## Run an ETL and enrich it
+
+`suMEDS-extract` runs a [MEDS-Extract](https://github.com/mmcdermott/MEDS_extract)
+ETL and then enriches the finished `metadata/codes.parquet` in place:
+
+```bash
+suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
+# suMEDS-enrich options go after a `--`:
+suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds -- --athena-csv /path/to/athena
+```
+
+Every argument before the `--` is passed to `meds-extract-run` unchanged;
+`spec=` and `output_dir=` are required. Every argument after it is a
+`suMEDS-enrich` option. Without `--rules`, the rules registered under the
+spec's name are used (see
+[Registering rules in a package](rules.md#registering-rules-in-a-package)); a
+spec given as a path needs an explicit `--rules`. The arguments and the rules
+are checked before the pipeline starts. If `meds-extract-run` fails, its exit
+code is returned and nothing is enriched.
+
+suMEDS does not depend on MEDS-Extract: it runs the `meds-extract-run` on
+`PATH`, so install both in the same environment (an ETL package such as
+`MC-MED-MEDS` brings MEDS-Extract with it). MEDS-Extract's pipeline cannot be
+extended by a dataset config, which is why enrichment is a second step rather
+than a pipeline stage. Running the command again on an existing output reuses
+the stages MEDS-Extract has already finished and enriches again.
 
 ## Output formats
 
