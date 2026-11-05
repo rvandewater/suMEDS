@@ -140,8 +140,9 @@ The filename suffix selects the writer:
 - `.parquet`: native typed Parquet and the recommended default. `code`,
   `description`, and `parent_codes` are written with the MEDS types (`string`,
   `list<string>`), so an enriched `codes.parquet` passes
-  `meds.CodeMetadataSchema.validate`;
-- `.csv`: standard CSV; list columns are pipe-delimited and struct columns are JSON strings;
+  `meds.CodeMetadataSchema.validate`. Names maps are `map<string, string>`;
+- `.csv`: standard CSV; list columns are pipe-delimited, names maps are JSON
+  objects, and struct columns are JSON strings;
 - `.json`: one valid JSON array assembled with bounded memory;
 - `.jsonl` or `.ndjson`: newline-delimited JSON for direct streaming.
 
@@ -158,7 +159,7 @@ Parquet when exact nested types matter.
 | `parent_codes` | list[string], nullable | Existing values plus valid Athena or pack ancestors through root by default, then same-table parents from hierarchy rules |
 | `child_codes` | list[string], nullable | Existing values plus optional Athena or pack descendants |
 | `sibling_codes` | list[string], nullable | Existing values plus optional children of Athena or pack ancestors |
-| `parent_names`, `child_names`, `sibling_names` | list[string], nullable | Name of each entry of the matching list, aligned with it; null where unknown (JSON arrays in CSV) |
+| `parent_names`, `child_names`, `sibling_names` | map[string, string], nullable | Entry of the matching list -> its name; entries with no known name are left out (JSON objects in CSV) |
 | code metadata extensions | source types | Preserved for common rows; null for masked rows |
 | `vocabulary_id` | string, nullable | Matched Athena or pack vocabulary when enrichment is enabled |
 | `concept_id` | int64, nullable | Numeric OMOP concept identifier |

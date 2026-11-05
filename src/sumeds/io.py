@@ -10,10 +10,15 @@ from uuid import uuid4
 import meds
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-#: List columns that CSV stores as JSON arrays rather than ``|``-joined text,
-#: because names can contain ``|`` and can be missing.
+#: A string-to-string map column. Polars has no map type and reads an Arrow map
+#: as a list of ``key``/``value`` structs, so that is the in-memory form; Parquet
+#: output stores it as ``map<string, string>`` and CSV as a JSON object.
+MAP_DTYPE = pl.List(pl.Struct({"key": pl.String, "value": pl.String}))
+#: The names lists of earlier suMEDS versions, aligned with their codes list. CSV
+#: stores them as JSON arrays, because names can contain ``|`` and can be missing.
 JSON_LIST_COLUMNS = frozenset({"parent_names", "child_names", "sibling_names"})
 OUTPUT_FORMATS = {
     ".parquet": "parquet",
@@ -76,7 +81,17 @@ def sink_table(
             if isinstance(dtype, pl.Array):
                 column = column.arr.to_list()
                 dtype = pl.List(dtype.inner)
-            if isinstance(dtype, pl.List) and name in JSON_LIST_COLUMNS:
+            if dtype == MAP_DTYPE:
+                nested.append(
+                    column.map_elements(
+                        lambda entries: json.dumps(
+                            {entry["key"]: entry["value"] for entry in entries},
+                            ensure_ascii=False,
+                        ),
+                        return_dtype=pl.String,
+                    ).alias(name)
+                )
+            elif isinstance(dtype, pl.List) and name in JSON_LIST_COLUMNS:
                 nested.append(
                     column.map_elements(
                         lambda values: json.dumps(list(values), ensure_ascii=False),
@@ -111,19 +126,74 @@ def sink_table(
             lines.unlink(missing_ok=True)
 
 
+_MAP_TYPE = pa.map_(pa.string(), pa.string())
+
+
+def _is_map_entries(type_: pa.DataType) -> bool:
+    """Whether ``type_`` is the list of string ``key``/``value`` structs of a map."""
+
+    if not (pa.types.is_list(type_) or pa.types.is_large_list(type_)):
+        return False
+    entry = type_.value_type
+    return (
+        pa.types.is_struct(entry)
+        and [field.name for field in entry] == ["key", "value"]
+        and all(
+            pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+            for field in entry
+        )
+    )
+
+
 def _meds_output_schema(schema: pa.Schema) -> pa.Schema:
     """Give the MEDS code-metadata columns of ``schema`` their MEDS Arrow types.
 
     Polars writes every string as ``large_string`` and every list as ``large_list``,
     but the MEDS schema requires ``string`` and ``list<string>``, and
-    ``meds.CodeMetadataSchema.validate`` rejects the large variants. Other columns
-    keep their type.
+    ``meds.CodeMetadataSchema.validate`` rejects the large variants. Map columns
+    (:data:`MAP_DTYPE`) become ``map<string, string>``. Other columns keep their
+    type.
     """
 
     expected = {field.name: field.type for field in meds.CodeMetadataSchema.schema()}
     return pa.schema(
-        [field.with_type(expected.get(field.name, field.type)) for field in schema]
+        [
+            field.with_type(
+                expected.get(
+                    field.name,
+                    _MAP_TYPE if _is_map_entries(field.type) else field.type,
+                )
+            )
+            for field in schema
+        ]
     )
+
+
+def _as_map(array: pa.Array, type_: pa.MapType) -> pa.MapArray:
+    """A list of ``key``/``value`` structs as a map array."""
+
+    keys, items = array.values.flatten()
+    offsets = array.offsets.cast(pa.int32())
+    if array.null_count:
+        # A null offset makes its slot null (``MapArray.from_arrays`` has no mask
+        # before pyarrow 17); the closing offset is never null.
+        nulls = pa.concat_arrays([array.is_null(), pa.array([False])])
+        offsets = pc.if_else(nulls, pa.scalar(None, pa.int32()), offsets)
+    return pa.MapArray.from_arrays(
+        offsets, keys.cast(type_.key_type), items.cast(type_.item_type)
+    )
+
+
+def _with_schema(batch: pa.RecordBatch, schema: pa.Schema) -> pa.RecordBatch:
+    """``batch`` in ``schema``; a cast cannot make a map from a list of structs."""
+
+    columns = [
+        _as_map(column, field.type)
+        if pa.types.is_map(field.type) and not pa.types.is_map(column.type)
+        else column.cast(field.type)
+        for column, field in zip(batch.columns, schema)
+    ]
+    return pa.RecordBatch.from_arrays(columns, schema=schema)
 
 
 def _sink_meds_parquet(frame: pl.LazyFrame, path: Path) -> None:
@@ -141,7 +211,7 @@ def _sink_meds_parquet(frame: pl.LazyFrame, path: Path) -> None:
             if not schema.equals(source.schema_arrow):
                 with pq.ParquetWriter(path, schema, compression="zstd") as writer:
                     for batch in source.iter_batches():
-                        writer.write_table(pa.Table.from_batches([batch]).cast(schema))
+                        writer.write_batch(_with_schema(batch, schema))
                 return
         os.replace(staged, path)
     finally:

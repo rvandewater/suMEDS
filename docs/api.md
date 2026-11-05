@@ -86,9 +86,9 @@ uses Athena only and skips crosswalk rules. Parents expand through the root by
 default; `loinc_hierarchy=True` (which needs `rules` and the packs) adds the
 LOINC Parts of the LOINC multiaxial hierarchy. Children and siblings are
 opt-in; `child_depth` accepts `1`–`100`. Existing relationship lists are kept
-verbatim and new entries appended without duplicates; every list gets an
-aligned names list (`parent_names` and so on), and existing parent references
-are named and their ancestors added.
+verbatim and new entries appended without duplicates; every list gets a names
+map from its entries to their names (`parent_names` and so on), and existing
+parent references are named and their ancestors added.
 Newly added codes must be valid in the selected source.
 
 ### `enrich_metadata`

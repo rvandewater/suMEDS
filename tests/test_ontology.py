@@ -252,6 +252,12 @@ def _enrich(frame: pl.DataFrame, packs: Path, rules: dict, **options) -> dict:
     return {row["code"]: row for row in result.to_dicts()}
 
 
+def _names(entries: list[dict[str, str]] | None) -> dict[str, str] | None:
+    """A names map, as Polars reads it, as a dict."""
+
+    return None if entries is None else {e["key"]: e["value"] for e in entries}
+
+
 def test_rules_file_parses_every_rule_kind(tmp_path: Path) -> None:
     path = tmp_path / "rules.yaml"
     path.write_text(
@@ -951,7 +957,8 @@ def test_environment_source_and_cli(
     assert "icd10cm [ontology, ICD10CM, pack]: 3 matched, 2 validated" in out
     assert "ontology [ontology]: 1 parents added to 1 codes" in out
     assert "Same-dataset parent links:  0 -> 1" in out
-    assert "Parent codes (all entries): 0 -> 4" in out
+    # DX//I50 is a same-table parent: its own row carries its description.
+    assert "Parent codes (all entries): 0 -> 4 (3 named)" in out
     assert re.search(r"Descriptions +0 -> +2 ", out)
     result = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
     assert result["DX//I50.2"]["parent_codes"] == [
@@ -1106,43 +1113,44 @@ def test_every_added_parent_comes_with_its_name(packs: Path, tmp_path: Path) -> 
         }
     )
     rows = _enrich(frame, packs, ICD_RULES)
-    assert rows["DIAGNOSIS//ICD//10//I5023"]["parent_names"] == [
-        "Acute on chronic systolic (congestive) heart failure",
-        "Systolic (congestive) heart failure",
-        "Heart failure",
-    ]
-    # An existing entry gets the name of the code it names; LOCAL has none.
-    assert rows["DIAGNOSIS//ICD//10//A047"]["parent_names"] == [
-        "Enterocolitis due to Clostridium difficile",
-        None,
-        "Other bacterial intestinal infections",
-    ]
-    assert rows["ICD10_PCS//0DT"]["parent_names"] == [
-        "Medical and Surgical @ Gastrointestinal System @ Resection",
-        "Medical and Surgical @ Gastrointestinal System",
-        "Medical and Surgical",
-    ]
-    assert rows["OTHER"]["parent_names"] == [None]
+    assert _names(rows["DIAGNOSIS//ICD//10//I5023"]["parent_names"]) == {
+        "ICD10CM//I50.23": "Acute on chronic systolic (congestive) heart failure",
+        "ICD10CM//I50.2": "Systolic (congestive) heart failure",
+        "ICD10CM//I50": "Heart failure",
+    }
+    # An existing entry gets the name of the code it names, keyed as the list
+    # spells it; LOCAL has none, so it is left out.
+    a047 = {
+        "ICD10CM/A04.7": "Enterocolitis due to Clostridium difficile",
+        "ICD10CM//A04": "Other bacterial intestinal infections",
+    }
+    assert _names(rows["DIAGNOSIS//ICD//10//A047"]["parent_names"]) == a047
+    assert _names(rows["ICD10_PCS//0DT"]["parent_names"]) == {
+        "ICD10PCS//0DT": ("Medical and Surgical @ Gastrointestinal System @ Resection"),
+        "ICD10PCS//0D": "Medical and Surgical @ Gastrointestinal System",
+        "ICD10PCS//0": "Medical and Surgical",
+    }
+    assert _names(rows["OTHER"]["parent_names"]) == {}
 
-    # Names survive a CSV round trip (JSON arrays, as names may contain "|"),
+    # Names survive a CSV round trip (JSON objects, as names may contain "|"),
     # and a second run keeps them.
     source = tmp_path / "codes.parquet"
     frame.write_parquet(source)
     config = EnrichmentConfig(rules=ICD_RULES, ontology_source=str(packs))
     enrich_file(source, tmp_path / "once.csv", config)
     text = (tmp_path / "once.csv").read_text()
-    assert '"[""Heart failure""' not in text  # nearest parent comes first
-    assert '""Systolic (congestive) heart failure""' in text
+    assert '""ICD10CM//I50.2"": ""Systolic (congestive) heart failure""' in text
+    csv_names = {
+        row["code"]: row["parent_names"]
+        for row in pl.read_csv(tmp_path / "once.csv").to_dicts()
+    }
+    assert json.loads(csv_names["DIAGNOSIS//ICD//10//A047"]) == a047
     enrich_file(tmp_path / "once.csv", tmp_path / "twice.parquet", config)
     again = {
         row["code"]: row
         for row in pl.read_parquet(tmp_path / "twice.parquet").to_dicts()
     }
-    assert again["DIAGNOSIS//ICD//10//A047"]["parent_names"] == [
-        "Enterocolitis due to Clostridium difficile",
-        None,
-        "Other bacterial intestinal infections",
-    ]
+    assert _names(again["DIAGNOSIS//ICD//10//A047"]["parent_names"]) == a047
 
 
 LAB_RULES = {
@@ -1169,7 +1177,9 @@ def test_loinc_parts_are_opt_in_and_named(packs: Path, tmp_path: Path) -> None:
     # The dataset keeps its description; the LOINC code travels with its name.
     assert plain["description"] == "Creatinine (dataset text)"
     assert plain["parent_codes"] == ["LOINC//2160-0"]
-    assert plain["parent_names"] == ["Creatinine [Mass/volume] in Serum or Plasma"]
+    assert _names(plain["parent_names"]) == {
+        "LOINC//2160-0": "Creatinine [Mass/volume] in Serum or Plasma"
+    }
 
     parts = _enrich(frame, packs, LAB_RULES, loinc_hierarchy=True)["LAB//100//mg/dL"]
     assert parts["parent_codes"] == [
@@ -1179,13 +1189,13 @@ def test_loinc_parts_are_opt_in_and_named(packs: Path, tmp_path: Path) -> None:
         "LOINC//LP1-1",
         "LOINC//LP4-5",
     ]
-    assert parts["parent_names"] == [
-        "Creatinine [Mass/volume] in Serum or Plasma",
-        "Creatinine | Serum or Plasma",
-        "Chemistry",
-        "{component}",
-        "Renal function",
-    ]
+    assert _names(parts["parent_names"]) == {
+        "LOINC//2160-0": "Creatinine [Mass/volume] in Serum or Plasma",
+        "LOINC//LP3-7": "Creatinine | Serum or Plasma",
+        "LOINC//LP2-9": "Chemistry",
+        "LOINC//LP1-1": "{component}",
+        "LOINC//LP4-5": "Renal function",
+    }
     client = OntologyPacks(str(packs))
     entry = client.lookup("LOINC", ["2160-0", "8867-4"], hierarchy=True)
     assert entry["8867-4"].ancestors == ()
@@ -1213,10 +1223,10 @@ def test_no_packs_uses_athena_only(
     # Athena keeps the ICD hierarchy only as "Is a" links; the valid shorter code
     # is added as the parent, as the pack would.
     assert athena["parent_codes"] == ["ICD10CM//A04.7", "ICD10CM//A04"]
-    assert athena["parent_names"] == [
-        "Athena enterocolitis",
-        "Athena intestinal infections",
-    ]
+    assert _names(athena["parent_names"]) == {
+        "ICD10CM//A04.7": "Athena enterocolitis",
+        "ICD10CM//A04": "Athena intestinal infections",
+    }
     assert rows["LAB//100//mg/dL"]["parent_codes"] is None
 
     source = tmp_path / "codes.parquet"
@@ -1294,18 +1304,22 @@ def test_packs_resolve_layouts_and_parent_references(
         "ICD10CM//I50.2",
         "ICD10CM//I50",
     ]
-    assert chf["parent_names"][:2] == [
-        "Acute on chronic systolic (congestive) heart failure",
-        "Enterocolitis due to C. difficile, not specified as recurrent",
-    ]
-    assert None not in chf["parent_names"]
+    chf_names = _names(chf["parent_names"])
+    assert chf_names is not None
+    assert chf_names["ICD10CM/I50.23"] == (
+        "Acute on chronic systolic (congestive) heart failure"
+    )
+    assert chf_names["ICD10CM/A04.72"] == (
+        "Enterocolitis due to C. difficile, not specified as recurrent"
+    )
+    assert set(chf_names) == set(chf["parent_codes"])  # every entry is named
     assert rows["DX//chf|acute"]["parent_codes"][-1] == "DX//chf"
     # A LOINC Part reference is not a term of the pack, so it stays unnamed
     # unless the LOINC hierarchy adds it.
     loinc = rows["LOINC/2160-0"]
     assert loinc["concept_code"] == "2160-0"
     assert loinc["parent_codes"] == ["LOINC/LP2-9"]
-    assert loinc["parent_names"] == [None]
+    assert _names(loinc["parent_names"]) == {}
     parts = _enrich(frame, packs, HIERARCHY_ONLY, loinc_hierarchy=True)
     assert parts["LOINC/2160-0"]["parent_codes"] == [
         "LOINC/LP2-9",
@@ -1313,7 +1327,7 @@ def test_packs_resolve_layouts_and_parent_references(
         "LOINC//LP1-1",
         "LOINC//LP4-5",
     ]
-    assert parts["LOINC/2160-0"]["parent_names"][0] == "Chemistry"
+    assert _names(parts["LOINC/2160-0"]["parent_names"])["LOINC/LP2-9"] == "Chemistry"
 
     # The matched reference is the one excluded, wherever it is in the list.
     excluded = _enrich(frame, packs, HIERARCHY_ONLY, exclude_self_parent_code=True)
