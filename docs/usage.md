@@ -140,10 +140,12 @@ The filename suffix selects the writer:
 - `.parquet`: native typed Parquet and the recommended default. `code`,
   `description`, and `parent_codes` are written with the MEDS types (`string`,
   `list<string>`), so an enriched `codes.parquet` passes
-  `meds.CodeMetadataSchema.validate`. Names maps are `map<string, string>`;
+  `meds.CodeMetadataSchema.validate`. Names maps are `map<string, string>`
+  (`pl.Map` in Polars 2, a list of `key`/`value` structs in Polars 1);
 - `.csv`: standard CSV; list columns are pipe-delimited, names maps are JSON
   objects, and struct columns are JSON strings;
-- `.json`: one valid JSON array assembled with bounded memory;
+- `.json`: one valid JSON array assembled with bounded memory; names maps are
+  lists of `key`/`value` objects, as in NDJSON;
 - `.jsonl` or `.ndjson`: newline-delimited JSON for direct streaming.
 
 JSON preserves nested metadata values. CSV necessarily flattens them; use

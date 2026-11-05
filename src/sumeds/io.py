@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import meds
@@ -13,10 +14,15 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-#: A string-to-string map column. Polars has no map type and reads an Arrow map
-#: as a list of ``key``/``value`` structs, so that is the in-memory form; Parquet
-#: output stores it as ``map<string, string>`` and CSV as a JSON object.
-MAP_DTYPE = pl.List(pl.Struct({"key": pl.String, "value": pl.String}))
+#: Map entries: a list of ``key``/``value`` structs. Polars 1, which has no map
+#: type, reads an Arrow map as these, and JSON output stores a map as these on
+#: every Polars version: JSON objects would have different keys in every row,
+#: which Polars' JSON schema inference cannot read back.
+MAP_ENTRIES = pl.List(pl.Struct({"key": pl.String, "value": pl.String}))
+#: A string-to-string map column: ``pl.Map`` on Polars 2, map entries on Polars 1.
+#: Parquet output stores it as ``map<string, string>``, CSV as a JSON object and
+#: JSON as map entries.
+MAP_DTYPE = pl.Map(pl.String, pl.String) if hasattr(pl, "Map") else MAP_ENTRIES
 #: The names lists of earlier suMEDS versions, aligned with their codes list. CSV
 #: stores them as JSON arrays, because names can contain ``|`` and can be missing.
 JSON_LIST_COLUMNS = frozenset({"parent_names", "child_names", "sibling_names"})
@@ -81,15 +87,11 @@ def sink_table(
             if isinstance(dtype, pl.Array):
                 column = column.arr.to_list()
                 dtype = pl.List(dtype.inner)
-            if dtype == MAP_DTYPE:
+            if dtype in (MAP_DTYPE, MAP_ENTRIES):
                 nested.append(
-                    column.map_elements(
-                        lambda entries: json.dumps(
-                            {entry["key"]: entry["value"] for entry in entries},
-                            ensure_ascii=False,
-                        ),
-                        return_dtype=pl.String,
-                    ).alias(name)
+                    column.map_elements(_json_object, return_dtype=pl.String).alias(
+                        name
+                    )
                 )
             elif isinstance(dtype, pl.List) and name in JSON_LIST_COLUMNS:
                 nested.append(
@@ -108,11 +110,11 @@ def sink_table(
                 nested.append(column.struct.json_encode().alias(name))
         frame.with_columns(nested).sink_csv(path)
     elif format_ == "ndjson":
-        frame.sink_ndjson(path)
+        _with_map_entries(frame).sink_ndjson(path)
     else:
         lines = path.with_suffix(path.suffix + ".ndjson")
         try:
-            frame.sink_ndjson(lines)
+            _with_map_entries(frame).sink_ndjson(lines)
             with lines.open("rb") as source, path.open("wb") as target:
                 target.write(b"[")
                 separator = b""
@@ -126,22 +128,43 @@ def sink_table(
             lines.unlink(missing_ok=True)
 
 
+def _json_object(value: Any) -> str:
+    """A map value (a dict, or map entries on Polars 1) as a JSON object."""
+
+    if not isinstance(value, dict):
+        value = {entry["key"]: entry["value"] for entry in value}
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _with_map_entries(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """``frame`` with its ``pl.Map`` columns as map entries, for JSON output."""
+
+    if MAP_DTYPE == MAP_ENTRIES:
+        return frame
+    maps = [
+        name for name, dtype in frame.collect_schema().items() if dtype == MAP_DTYPE
+    ]
+    return frame.with_columns(pl.col(maps).cast(MAP_ENTRIES)) if maps else frame
+
+
 _MAP_TYPE = pa.map_(pa.string(), pa.string())
 
 
-def _is_map_entries(type_: pa.DataType) -> bool:
-    """Whether ``type_`` is the list of string ``key``/``value`` structs of a map."""
+def _is_string_map(type_: pa.DataType) -> bool:
+    """Whether ``type_`` is a string-to-string map, or the map entries of one."""
 
-    if not (pa.types.is_list(type_) or pa.types.is_large_list(type_)):
+    if pa.types.is_map(type_):
+        fields = [type_.key_field, type_.item_field]
+    elif pa.types.is_list(type_) or pa.types.is_large_list(type_):
+        entry = type_.value_type
+        if not pa.types.is_struct(entry) or [f.name for f in entry] != ["key", "value"]:
+            return False
+        fields = list(entry)
+    else:
         return False
-    entry = type_.value_type
-    return (
-        pa.types.is_struct(entry)
-        and [field.name for field in entry] == ["key", "value"]
-        and all(
-            pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
-            for field in entry
-        )
+    return all(
+        pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+        for field in fields
     )
 
 
@@ -151,8 +174,8 @@ def _meds_output_schema(schema: pa.Schema) -> pa.Schema:
     Polars writes every string as ``large_string`` and every list as ``large_list``,
     but the MEDS schema requires ``string`` and ``list<string>``, and
     ``meds.CodeMetadataSchema.validate`` rejects the large variants. Map columns
-    (:data:`MAP_DTYPE`) become ``map<string, string>``. Other columns keep their
-    type.
+    (:data:`MAP_DTYPE`, which Polars 2 writes with ``large_string`` keys and values)
+    become ``map<string, string>``. Other columns keep their type.
     """
 
     expected = {field.name: field.type for field in meds.CodeMetadataSchema.schema()}
@@ -161,7 +184,7 @@ def _meds_output_schema(schema: pa.Schema) -> pa.Schema:
             field.with_type(
                 expected.get(
                     field.name,
-                    _MAP_TYPE if _is_map_entries(field.type) else field.type,
+                    _MAP_TYPE if _is_string_map(field.type) else field.type,
                 )
             )
             for field in schema
@@ -185,7 +208,7 @@ def _as_map(array: pa.Array, type_: pa.MapType) -> pa.MapArray:
 
 
 def _with_schema(batch: pa.RecordBatch, schema: pa.Schema) -> pa.RecordBatch:
-    """``batch`` in ``schema``; a cast cannot make a map from a list of structs."""
+    """``batch`` in ``schema``; a cast cannot make a map from map entries."""
 
     columns = [
         _as_map(column, field.type)

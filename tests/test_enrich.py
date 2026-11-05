@@ -18,12 +18,15 @@ from sumeds import (
     summarize,
 )
 from sumeds.cli import enrich_main
+from sumeds.io import MAP_DTYPE, scan_table, sink_table
 
 
-def _names(entries: list[dict[str, str]] | None) -> dict[str, str] | None:
-    """A names map, as Polars reads it, as a dict."""
+def _names(value: dict[str, str] | list[dict[str, str]] | None) -> dict | None:
+    """A names map as a dict: Polars 2 reads it as one, Polars 1 as map entries."""
 
-    return None if entries is None else {e["key"]: e["value"] for e in entries}
+    if value is None or isinstance(value, dict):
+        return value
+    return {entry["key"]: entry["value"] for entry in value}
 
 
 @pytest.fixture
@@ -498,17 +501,46 @@ def test_names_are_a_map_in_every_output_format(
     table = pq.read_table(parquet)
     assert table.schema.field("parent_names").type == pa.map_(pa.string(), pa.string())
     assert dict(table.column("parent_names")[0].as_py()) == expected
-    # Polars reads the map as key/value entries, and enrichment reads it back.
+    # Polars reads the map back (as pl.Map on Polars 2), and so does enrichment.
     assert _names(pl.read_parquet(parquet)["parent_names"][0]) == expected
     again = enrich_file(parquet, tmp_path / "again.parquet", config)
     assert dict(pq.read_table(again).column("parent_names")[0].as_py()) == expected
 
     csv = enrich_file(source, tmp_path / "out.csv", config)
     assert json.loads(pl.read_csv(csv)["parent_names"][0]) == expected
+    # JSON stores map entries on every Polars version.
+    entries = [{"key": key, "value": name} for key, name in expected.items()]
     json_output = enrich_file(source, tmp_path / "out.json", config)
-    assert _names(pl.read_json(json_output)["parent_names"][0]) == expected
+    assert pl.read_json(json_output)["parent_names"].to_list() == [entries]
     ndjson = enrich_file(source, tmp_path / "out.ndjson", config)
-    assert _names(pl.read_ndjson(ndjson)["parent_names"][0]) == expected
+    assert pl.read_ndjson(ndjson)["parent_names"].to_list() == [entries]
+
+
+@pytest.mark.parametrize("suffix", [".parquet", ".csv", ".json", ".ndjson"])
+def test_names_maps_round_trip_through_every_format(
+    suffix: str, tmp_path: Path
+) -> None:
+    """Every row has different keys, more rows than JSON schema inference reads."""
+
+    names = [{f"V//{index}": f"name {index}"} for index in range(150)] + [{}, None]
+    frame = pl.DataFrame(
+        {
+            "code": [str(index) for index in range(len(names))],
+            "parent_names": [
+                None
+                if value is None
+                else [{"key": k, "value": v} for k, v in value.items()]
+                for value in names
+            ],
+        },
+        schema={"code": pl.String, "parent_names": MAP_DTYPE},
+    )
+    path = tmp_path / f"names{suffix}"
+    sink_table(frame.lazy(), path)
+    back = scan_table(path).collect()["parent_names"].to_list()
+    if suffix == ".csv":
+        back = [None if value is None else json.loads(value) for value in back]
+    assert [_names(value) for value in back] == names
 
 
 def test_aligned_names_lists_of_earlier_versions_are_read(

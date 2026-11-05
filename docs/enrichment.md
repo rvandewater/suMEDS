@@ -257,16 +257,20 @@ of every vocabulary code that enrichment links it to. The LOINC license asks
 for this when such a table is shared: every LOINC code and Part number must
 come with its LOINC display name (Section 10.3).
 
-In Parquet output, a names map is a `map<string, string>` column. Polars reads
-it as a list of `key`/`value` structs, which is also how JSON and NDJSON output
-store it. CSV output stores it as a JSON object, because names can contain `|`.
-For example:
+In Parquet output, a names map is a `map<string, string>` column. Polars 2
+reads it as a `pl.Map(pl.String, pl.String)`, whose values are dicts. Polars 1
+has no map type and reads it as a list of `key`/`value` structs. JSON and NDJSON
+output store it as such a list too, on every Polars version, because JSON
+objects with different keys in every row defeat JSON schema inference. CSV
+output stores it as a JSON object, because names can contain `|`. For example:
 
 ```python
 import polars as pl
 
 row = pl.read_parquet("codes.parquet").row(0, named=True)
-names = {entry["key"]: entry["value"] for entry in row["parent_names"] or ()}
+names = row["parent_names"] or {}
+if not isinstance(names, dict):  # Polars 1: a list of key/value structs
+    names = {entry["key"]: entry["value"] for entry in names}
 for parent in row["parent_codes"] or ():
     print(parent, names.get(parent))
 ```

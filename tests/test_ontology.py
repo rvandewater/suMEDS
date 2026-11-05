@@ -252,10 +252,12 @@ def _enrich(frame: pl.DataFrame, packs: Path, rules: dict, **options) -> dict:
     return {row["code"]: row for row in result.to_dicts()}
 
 
-def _names(entries: list[dict[str, str]] | None) -> dict[str, str] | None:
-    """A names map, as Polars reads it, as a dict."""
+def _names(value: dict[str, str] | list[dict[str, str]] | None) -> dict | None:
+    """A names map as a dict: Polars 2 reads it as one, Polars 1 as map entries."""
 
-    return None if entries is None else {e["key"]: e["value"] for e in entries}
+    if value is None or isinstance(value, dict):
+        return value
+    return {entry["key"]: entry["value"] for entry in value}
 
 
 def test_rules_file_parses_every_rule_kind(tmp_path: Path) -> None:

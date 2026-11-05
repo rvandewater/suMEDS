@@ -207,10 +207,10 @@ Names = dict[str, str]
 def _name_map(value: Any, codes: Sequence[str | None] | None = None) -> Names:
     """A names value as entry -> name, leaving out unknown names.
 
-    ``value`` is map entries (``[{"key": ..., "value": ...}]``, as Polars reads an
-    Arrow map), a dict, or a JSON object (CSV). The aligned names lists of earlier
-    suMEDS versions, also as JSON arrays, are read too: they name ``codes`` entry by
-    entry.
+    ``value`` is a dict (a Polars 2 map), map entries (``[{"key": ..., "value":
+    ...}]``: a Polars 1 map, or JSON input), or a JSON object (CSV input). The
+    aligned names lists of earlier suMEDS versions, also as JSON arrays, are read
+    too: they name ``codes`` entry by entry.
     """
 
     if isinstance(value, str):
@@ -233,7 +233,8 @@ def _name_map(value: Any, codes: Sequence[str | None] | None = None) -> Names:
 
 
 def _map_entries(names: Names) -> list[dict[str, str]]:
-    """``names`` as the entries of a :data:`~sumeds.io.MAP_DTYPE` value."""
+    """``names`` as map entries, from which Polars builds a
+    :data:`~sumeds.io.MAP_DTYPE` value on every version."""
 
     return [{"key": key, "value": name} for key, name in names.items()]
 
