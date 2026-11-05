@@ -113,7 +113,7 @@ references get their names, and the ancestors of both are added.
 | `parent_codes` | ancestors from `CONCEPT_ANCESTOR`, of the code and of its existing parent references; for ICD codes, also the valid shorter codes ([below](#icd-codes)) |
 | `child_codes` | descendants up to `child_depth` levels (opt-in) |
 | `sibling_codes` | the direct children of every ancestor, except the code itself (opt-in) |
-| `parent_names`, `child_names`, `sibling_names` | `concept_name` of each related concept, aligned with its list, including the existing parent references |
+| `parent_names`, `child_names`, `sibling_names` | `concept_name` of each related concept, keyed by its entry in the list, including the existing parent references |
 
 Related codes are written as `VOCABULARY//CONCEPT_CODE`. A related concept must
 itself be a valid row of your `CONCEPT` file. When a code is matched through a

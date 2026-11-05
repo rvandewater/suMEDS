@@ -111,7 +111,7 @@ merge into the table, overwriting nothing
     Ancestors come from Athena (`CONCEPT_ANCESTOR`, plus [ICD shorter
     codes](athena.md#icd-codes)), from the pack, or both, merged. Children and
     siblings are added when enabled. Each added code's name goes into the
-    aligned names list (`parent_names` and so on).
+    names map of its list (`parent_names` and so on).
 
 6. **Look up existing parent references.** Every existing `parent_codes`
    entry that names a vocabulary code (`ICD10CM/I50.40`, not only the first)
@@ -200,7 +200,7 @@ wording differs from Athena's.
 | `parent_codes` | list[string] | ancestors through the root (default on) |
 | `child_codes` | list[string] | descendants up to `child_depth` (opt-in) |
 | `sibling_codes` | list[string] | the direct children of every ancestor, except the code itself (opt-in) |
-| `parent_names`, `child_names`, `sibling_names` | list[string] | the name of each entry of the list beside it, aligned entry by entry; null where no name is known |
+| `parent_names`, `child_names`, `sibling_names` | map[string, string] | entry of the list beside it -> its name; entries with no known name are left out |
 | `vocabulary_id` | string | the matched vocabulary |
 | `concept_id` | int64 | numeric OMOP concept identifier (Athena only) |
 | `concept_code` | string | vocabulary-local code |
@@ -225,9 +225,11 @@ Enrichment is non-destructive:
   Invalid, missing, self-referential and cyclic hierarchy rows are ignored.
 - Unmatched codes pass through unchanged.
 - With `--no-parent-codes` (and likewise for children and siblings), the list
-  and its names list are left as they are.
-- In CSV input, relationship lists are `|`-joined text and names lists are
-  JSON arrays. Both are read back into lists.
+  and its names map are left as they are.
+- In CSV input, relationship lists are `|`-joined text and names maps are
+  JSON objects. Both are read back.
+- Names lists written by earlier versions, aligned entry by entry with their
+  codes list, are read too, and written back as maps.
 
 The one opt-in exception is `--exclude-self-parent-code`
 (`exclude_self_parent_code: true`). It removes the existing parent reference
@@ -236,14 +238,15 @@ loses that entry and keeps the rest.
 
 ## Names
 
-Every relationship list comes with a names list of the same length:
-`parent_names[i]` names `parent_codes[i]`.
+Every relationship list comes with a names map from its entries to their
+names: `parent_names` maps each entry of `parent_codes`, spelled as in the list,
+to its name. The map does not depend on the order of the list.
 
 - **Codes that enrichment adds** are named by the Athena `concept_name` or the
   pack description. LOINC Parts get their Part name.
 - **Existing entries** keep their existing name. If they have none, they get
   the name of the code they reference, when Athena or a pack knows it.
-- **Null names** remain for:
+- **No name**, so no key in the map, remains for:
     - same-table parents, whose description is in their own row;
     - tags;
     - references that neither Athena nor a pack knows, such as a LOINC Part
@@ -252,8 +255,25 @@ Every relationship list comes with a names list of the same length:
 So a dataset that keeps its own `description` still carries the official name
 of every vocabulary code that enrichment links it to. The LOINC license asks
 for this when such a table is shared: every LOINC code and Part number must
-come with its LOINC display name (Section 10.3). CSV output stores the names
-lists as JSON arrays, because names can contain `|` and can be missing.
+come with its LOINC display name (Section 10.3).
+
+In Parquet output, a names map is a `map<string, string>` column. Polars 2
+reads it as a `pl.Map(pl.String, pl.String)`, whose values are dicts. Polars 1
+has no map type and reads it as a list of `key`/`value` structs. JSON and NDJSON
+output store it as such a list too, on every Polars version, because JSON
+objects with different keys in every row defeat JSON schema inference. CSV
+output stores it as a JSON object, because names can contain `|`. For example:
+
+```python
+import polars as pl
+
+row = pl.read_parquet("codes.parquet").row(0, named=True)
+names = row["parent_names"] or {}
+if not isinstance(names, dict):  # Polars 1: a list of key/value structs
+    names = {entry["key"]: entry["value"] for entry in names}
+for parent in row["parent_codes"] or ():
+    print(parent, names.get(parent))
+```
 
 ## Hierarchy and order
 

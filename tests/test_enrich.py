@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,15 @@ from sumeds import (
     summarize,
 )
 from sumeds.cli import enrich_main
+from sumeds.io import MAP_DTYPE, scan_table, sink_table
+
+
+def _names(value: dict[str, str] | list[dict[str, str]] | None) -> dict | None:
+    """A names map as a dict: Polars 2 reads it as one, Polars 1 as map entries."""
+
+    if value is None or isinstance(value, dict):
+        return value
+    return {entry["key"]: entry["value"] for entry in value}
 
 
 @pytest.fixture
@@ -379,9 +389,10 @@ def test_postgres_uses_batched_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["parent_codes"].to_list() == [["SNOMED//PARENT"]]
     assert result["child_codes"].to_list() == [["SNOMED//CHILD1"]]
     assert result["sibling_codes"].to_list() == [["SNOMED//SIB"]]
-    assert result["parent_names"].to_list() == [["Parent concept"]]
-    assert result["child_names"].to_list() == [["Child concept"]]
-    assert result["sibling_names"].to_list() == [[None]]
+    assert _names(result["parent_names"][0]) == {"SNOMED//PARENT": "Parent concept"}
+    assert _names(result["child_names"][0]) == {"SNOMED//CHILD1": "Child concept"}
+    # A related code without a name is left out of the names map.
+    assert _names(result["sibling_names"][0]) == {}
 
 
 def test_postgres_parent_toggle_preserves_unmatched_metadata(
@@ -472,6 +483,95 @@ def test_standalone_handles_csv_and_null_columns(
         "SNOMED//PARENT",
         "SNOMED//ROOT",
     ]
+
+
+def test_names_are_a_map_in_every_output_format(
+    athena_csv: Path, tmp_path: Path
+) -> None:
+    source = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["CMS Place of Service//02//end"]}).write_parquet(source)
+    config = EnrichmentConfig(csv_dir=athena_csv)
+    expected = {
+        "SNOMED//BRANCH": "Branch",
+        "SNOMED//PARENT": "Visit parent",
+        "SNOMED//ROOT": "Root",
+    }
+
+    parquet = enrich_file(source, tmp_path / "out.parquet", config)
+    table = pq.read_table(parquet)
+    assert table.schema.field("parent_names").type == pa.map_(pa.string(), pa.string())
+    assert dict(table.column("parent_names")[0].as_py()) == expected
+    # Polars reads the map back (as pl.Map on Polars 2), and so does enrichment.
+    assert _names(pl.read_parquet(parquet)["parent_names"][0]) == expected
+    again = enrich_file(parquet, tmp_path / "again.parquet", config)
+    assert dict(pq.read_table(again).column("parent_names")[0].as_py()) == expected
+
+    csv = enrich_file(source, tmp_path / "out.csv", config)
+    assert json.loads(pl.read_csv(csv)["parent_names"][0]) == expected
+    # JSON stores map entries on every Polars version.
+    entries = [{"key": key, "value": name} for key, name in expected.items()]
+    json_output = enrich_file(source, tmp_path / "out.json", config)
+    assert pl.read_json(json_output)["parent_names"].to_list() == [entries]
+    ndjson = enrich_file(source, tmp_path / "out.ndjson", config)
+    assert pl.read_ndjson(ndjson)["parent_names"].to_list() == [entries]
+
+
+@pytest.mark.parametrize("suffix", [".parquet", ".csv", ".json", ".ndjson"])
+def test_names_maps_round_trip_through_every_format(
+    suffix: str, tmp_path: Path
+) -> None:
+    """Every row has different keys, more rows than JSON schema inference reads."""
+
+    names = [{f"V//{index}": f"name {index}"} for index in range(150)] + [{}, None]
+    frame = pl.DataFrame(
+        {
+            "code": [str(index) for index in range(len(names))],
+            "parent_names": [
+                None
+                if value is None
+                else [{"key": k, "value": v} for k, v in value.items()]
+                for value in names
+            ],
+        },
+        schema={"code": pl.String, "parent_names": MAP_DTYPE},
+    )
+    path = tmp_path / f"names{suffix}"
+    sink_table(frame.lazy(), path)
+    back = scan_table(path).collect()["parent_names"].to_list()
+    if suffix == ".csv":
+        back = [None if value is None else json.loads(value) for value in back]
+    assert [_names(value) for value in back] == names
+
+
+def test_aligned_names_lists_of_earlier_versions_are_read(
+    athena_csv: Path, tmp_path: Path
+) -> None:
+    """Earlier versions wrote a names list aligned with its codes list."""
+
+    frame = pl.DataFrame(
+        {
+            "code": ["LOCAL"],
+            "parent_codes": [["LOCAL//PARENT", "SNOMED/BRANCH"]],
+            "parent_names": [["Local parent", None]],
+        }
+    )
+    config = EnrichmentConfig(csv_dir=athena_csv)
+    expected = {
+        "LOCAL//PARENT": "Local parent",
+        "SNOMED/BRANCH": "Branch",
+        "SNOMED//ROOT": "Root",
+    }
+    row = enrich_metadata(frame.lazy(), config).collect().row(0, named=True)
+    assert _names(row["parent_names"]) == expected
+
+    # In CSV, as a JSON array.
+    source = tmp_path / "old.csv"
+    source.write_text(
+        "code,parent_codes,parent_names\n"
+        'LOCAL,LOCAL//PARENT|SNOMED/BRANCH,"[""Local parent"", null]"\n'
+    )
+    output = enrich_file(source, tmp_path / "new.csv", config)
+    assert json.loads(pl.read_csv(output)["parent_names"][0]) == expected
 
 
 def test_parquet_outputs_have_meds_types(meds_dataset: Path, tmp_path: Path) -> None:
@@ -730,10 +830,10 @@ def test_athena_icd_parents_are_the_valid_shorter_codes(tmp_path: Path) -> None:
         .to_dicts()
     }
     assert rows["ICD10CM//I50.23"]["parent_codes"] == ["ICD10CM//I50", "ICD10CM//I50.2"]
-    assert rows["ICD10CM//I50.23"]["parent_names"] == [
-        "Heart failure",
-        "Systolic heart failure",
-    ]
+    assert _names(rows["ICD10CM//I50.23"]["parent_names"]) == {
+        "ICD10CM//I50": "Heart failure",
+        "ICD10CM//I50.2": "Systolic heart failure",
+    }
     assert rows["ICD9Proc//84.82"]["parent_codes"] == ["ICD9Proc//84", "ICD9Proc//84.8"]
     assert rows["ICD10CM//I50"]["parent_codes"] is None
     off = enrich_metadata(
@@ -772,7 +872,10 @@ def test_postgres_icd_parents_are_looked_up_once(
     ).collect()
     assert len(calls) == 2
     assert result["parent_codes"].to_list() == [["ICD10CM//I50", "ICD10CM//I50.2"]]
-    assert result["parent_names"].to_list() == [["Heart failure", "Systolic"]]
+    assert _names(result["parent_names"][0]) == {
+        "ICD10CM//I50": "Heart failure",
+        "ICD10CM//I50.2": "Systolic",
+    }
 
 
 def test_single_slash_codes_are_their_own_concept(
@@ -795,13 +898,19 @@ def test_single_slash_codes_are_their_own_concept(
     known = rows["SNOMED/PARENT"]
     assert known["concept_id"] == 100 and known["description"] == "Visit parent"
     assert known["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
-    assert known["parent_names"] == ["Branch", "Root"]
+    assert _names(known["parent_names"]) == {
+        "SNOMED/BRANCH": "Branch",
+        "SNOMED//ROOT": "Root",
+    }
     # A code missing from Athena is not taken for its parent of the same
     # vocabulary; the parent is still named and its ancestors are added.
     unknown = rows["SNOMED/UNKNOWN"]
     assert unknown["concept_id"] is None and unknown["description"] is None
     assert unknown["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
-    assert unknown["parent_names"] == ["Branch", "Root"]
+    assert _names(unknown["parent_names"]) == {
+        "SNOMED/BRANCH": "Branch",
+        "SNOMED//ROOT": "Root",
+    }
 
     # The same code written with its dots still identifies the code.
     athena = _athena_icd(tmp_path / "icd")
@@ -843,15 +952,15 @@ def test_every_parent_reference_is_named_and_expanded(tmp_path: Path) -> None:
         "ICD9Proc//84",
         "ICD9Proc//84.8",
     ]
-    assert row["parent_names"] == [
-        "Acute on chronic",
-        "Pedicle-based",
-        None,
-        "Heart failure",
-        "Systolic heart failure",
-        "Other musculoskeletal",
-        "Spinal devices",
-    ]
+    # Each entry is named as the list spells it; LOCAL has no name.
+    assert _names(row["parent_names"]) == {
+        "ICD10CM/I50.23": "Acute on chronic",
+        "ICD9Proc/84.82": "Pedicle-based",
+        "ICD10CM//I50": "Heart failure",
+        "ICD10CM//I50.2": "Systolic heart failure",
+        "ICD9Proc//84": "Other musculoskeletal",
+        "ICD9Proc//84.8": "Spinal devices",
+    }
     excluded = (
         enrich_metadata(
             frame, EnrichmentConfig(csv_dir=athena, exclude_self_parent_code=True)
@@ -898,4 +1007,7 @@ def test_postgres_looks_up_references_in_the_same_batch(
     assert len(calls) == 1
     assert row["concept_id"] is None
     assert row["parent_codes"] == ["SNOMED/BRANCH", "SNOMED//ROOT"]
-    assert row["parent_names"] == ["Branch", "Root"]
+    assert _names(row["parent_names"]) == {
+        "SNOMED/BRANCH": "Branch",
+        "SNOMED//ROOT": "Root",
+    }
