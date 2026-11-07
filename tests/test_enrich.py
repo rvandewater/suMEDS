@@ -21,6 +21,7 @@ from sumeds import (
     summarize,
 )
 from sumeds.cli import enrich_main
+from sumeds.enrich import record_failure, short_error
 from sumeds.io import MAP_DTYPE, scan_table, sink_table
 
 
@@ -794,9 +795,19 @@ _RECORD_KEYS = [
     "rules_sha256",
     "ontology_source",
     "athena",
+    "options",
     "enriched_at",
     "coverage",
 ]
+_DEFAULT_OPTIONS = {
+    "parent_codes": True,
+    "child_codes": False,
+    "sibling_codes": False,
+    "child_depth": 3,
+    "exclude_self_parent_code": False,
+    "packs": True,
+    "loinc_hierarchy": False,
+}
 
 
 def test_enriching_a_meds_root_in_place_records_it_in_dataset_json(
@@ -830,6 +841,7 @@ def test_enriching_a_meds_root_in_place_records_it_in_dataset_json(
     # An Athena download is recorded as used, never by its location.
     assert record["athena"] is True
     assert str(athena_csv) not in dataset_json.read_text()
+    assert record["options"] == _DEFAULT_OPTIONS
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["enriched_at"])
     assert record["coverage"] == {
         "codes": 3,
@@ -903,6 +915,9 @@ def test_no_record_without_a_meds_dataset_json(
     )
     assert dataset_json.read_bytes() == before
 
+    # A failure is recorded only for a MEDS dataset's codes, never for a loose file.
+    assert not record_failure(loose, {}, OSError("x"), "retry")
+
     # An invalid dataset.json is left as it is, with a warning; the codes are enriched.
     dataset_json.write_text('{"dataset_name": 5}')
     codes = meds_dataset / "metadata" / "codes.parquet"
@@ -910,6 +925,28 @@ def test_no_record_without_a_meds_dataset_json(
         enrich_file(codes, codes, config)
     assert dataset_json.read_text() == '{"dataset_name": 5}'
     assert "concept_id" in pl.read_parquet_schema(codes)
+
+
+def test_short_errors_hold_no_table_values() -> None:
+    assert (
+        short_error(ValueError("bad rule\n  at line 2"))
+        == "ValueError: bad rule at line 2"
+    )
+    assert (
+        short_error(
+            FileNotFoundError("Athena file not found: /data/athena/v5/CONCEPT.csv"),
+            redact={"/data/athena": "<A>", "/data/athena/v5": "<ATHENA_DIR>"},
+        )
+        == "FileNotFoundError: Athena file not found: <ATHENA_DIR>/CONCEPT.csv"
+    )
+    # Polars and Arrow messages can quote values, so only their type is kept.
+    try:
+        pl.DataFrame({"x": ["patient-text"]}).select(pl.col("x").cast(pl.Int64))
+    except pl.exceptions.PolarsError as error:
+        assert short_error(error) == type(error).__name__
+    assert short_error(pa.lib.ArrowInvalid("value 'patient-text'")) == "ArrowInvalid"
+    assert short_error(RuntimeError("psql: value 'x'")) == "RuntimeError"
+    assert len(short_error(ValueError("x" * 1000))) == 300
 
 
 def _athena_icd(directory: Path) -> Path:

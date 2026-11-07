@@ -7,11 +7,13 @@
    the ``--``. Without ``--rules``, it uses the rules file a package registered under the spec's
    name (the ``sumeds.rules`` entry-point group; see :func:`sumeds.registered_rules`).
 
-MEDS-Extract runs a fixed pipeline that a dataset config cannot extend, so the enrichment is a
-second step rather than a pipeline stage. suMEDS does not import MEDS-Extract: it runs the
-``meds-extract-run`` found on ``PATH``, which is the one installed alongside it. The arguments
-and rules are checked before the pipeline starts, and the pipeline's exit code is returned if it
-fails, in which case nothing is enriched.
+suMEDS does not import MEDS-Extract: it runs the ``meds-extract-run`` found on ``PATH``, which is
+the one installed alongside it. The arguments and rules are checked before the pipeline starts,
+and the pipeline's exit code is returned if it fails, in which case nothing is enriched.
+
+A failed enrichment does not fail the ETL: ``codes.parquet`` is left as the pipeline wrote it,
+the failure is recorded in ``DIR/metadata/dataset.json``, a warning gives the command to enrich
+it later (``suMEDS-enrich DIR``), and the exit code is 0. ``-- --strict`` makes it an error.
 """
 
 from __future__ import annotations
@@ -57,8 +59,12 @@ def _override(overrides: list[str], key: str) -> str | None:
     return value
 
 
-def _has_rules(enrich_args: list[str]) -> bool:
-    return any(arg == "--rules" or arg.startswith("--rules=") for arg in enrich_args)
+def _has_option(enrich_args: list[str], *names: str) -> bool:
+    return any(
+        arg == name or arg.startswith(f"{name}=")
+        for arg in enrich_args
+        for name in names
+    )
 
 
 def build_extract_parser() -> argparse.ArgumentParser:
@@ -97,7 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # relative to it here too.
     codes = Path(output_dir).expanduser().resolve() / "metadata" / "codes.parquet"
     enrich_argv = [str(codes), "-o", str(codes), *enrich_args]
-    if not _has_rules(enrich_args):
+    if not _has_option(enrich_args, "--soft-fail", "--strict"):
+        enrich_argv.append("--soft-fail")
+    if not _has_option(enrich_args, "--rules"):
         if spec not in registered_rules():
             available = ", ".join(sorted(registered_rules())) or "none"
             parser.error(

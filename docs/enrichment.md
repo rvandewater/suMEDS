@@ -404,6 +404,10 @@ Python. For example:
     "rules_sha256": "58e31fac423aa3f66b09a1d1f40ef25cb32696e6184f6eaece2bd381c8d56328",
     "ontology_source": "rvandewater/sumeds-ontologies@v0.2.0",
     "athena": false,
+    "options": {
+      "parent_codes": true, "child_codes": false, "sibling_codes": false, "child_depth": 3,
+      "exclude_self_parent_code": false, "packs": true, "loinc_hierarchy": false
+    },
     "enriched_at": "2026-11-07T18:38:56Z",
     "coverage": {"codes": 3, "described": [1, 3], "with_parent_codes": [0, 2]}
   }
@@ -412,14 +416,29 @@ Python. For example:
 
 | Field | Value |
 |---|---|
-| `enriched` | Always `true`; a dataset that was not enriched has no `sumeds_enrichment` key |
+| `enriched` | `true`, or `false` for an enrichment that failed inside an ETL (see below); a dataset that enrichment never ran on has no `sumeds_enrichment` key |
 | `sumeds_version` | The suMEDS version that enriched it |
 | `rules` | The name the rules are registered under, the rules file's name, or `inline` for rules given as a mapping in Python; `null` without rules |
 | `rules_sha256` | sha256 of the rules file (of the canonical JSON of a mapping); `null` without rules |
 | `ontology_source` | The pack source when rules use the packs: `rvandewater/sumeds-ontologies@<ref>` by default, the URL of another remote source (without credentials or query), or `local`; otherwise `null` |
 | `athena` | Whether an Athena download (CSV directory or PostgreSQL) was used. Its location is never written |
+| `options` | The hierarchy and pack options, so that `suMEDS-enrich MEDS_ROOT` can enrich again with them |
 | `enriched_at` | UTC time of the enrichment, ISO 8601 |
 | `coverage` | Rows of `codes.parquet` (`codes`), and rows with a `description` and with `parent_codes`, as `[before, after]` |
+
+An enrichment that fails inside an ETL (`suMEDS-extract`, or `--soft-fail`)
+leaves `codes.parquet` as it was and records `"enriched": false` with the
+same fields up to `options`, then `attempted_at`, a one-line `error`, and the
+`retry` command, for example
+`"error": "OntologyPackError: could not download https://...index.json: <urlopen error ...>"`
+and `"retry": "suMEDS-enrich <MEDS_ROOT>"`. The error is kept short and holds
+no table values: errors whose messages could quote them (Polars, Arrow,
+PostgreSQL) are named by their type only, and the paths the record does not
+keep (Athena, a rules file, a local pack source) and a PostgreSQL connection
+string are replaced by placeholders such as `<ATHENA_DIR>`.
+If the dataset already has the record of a successful enrichment,
+`codes.parquet` still holds that enrichment, so that record is kept. See
+[Enrich a MEDS dataset later](usage.md#enrich-a-meds-dataset-later).
 
 The record is counts and provenance only. Every other key stays as it was, in
 its place, and the file keeps its layout (compact, as MEDS-Extract writes it,

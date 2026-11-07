@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 import meds
@@ -21,7 +21,13 @@ from tqdm.auto import tqdm
 
 from .config import EnrichmentConfig
 from .io import MAP_DTYPE, output_format, scan_table, sink_table
-from .ontology import CrosswalkRule, OntologyPacks, PackEntry, describe_source
+from .ontology import (
+    CrosswalkRule,
+    OntologyPackError,
+    OntologyPacks,
+    PackEntry,
+    describe_source,
+)
 
 #: Top-level ``metadata/dataset.json`` key in which enriching a MEDS dataset's
 #: ``codes.parquet`` records how it was enriched.
@@ -392,56 +398,157 @@ def enrich_file(
             progress.update()
             progress.set_description("Writing output")
             sink_table(enriched, staged, format_)
-            # Measured before the replace, which in place overwrites the input.
-            before = _coverage(source, links=verbose) if measure else None
-            staged.replace(output_path)
             progress.update()
             if measure:
+                # Measured before the replace, which in place overwrites the input.
                 progress.set_description("Calculating coverage")
-                after = _coverage(scan_table(output_path), links=verbose)
+                coverage = (
+                    _coverage(source, links=verbose),
+                    _coverage(scan_table(staged), links=verbose),
+                )
+            staged.replace(output_path)
             progress.update()
         finally:
             staged.unlink(missing_ok=True)
     if dataset is not None:
-        _write_dataset_metadata(dataset, _enrichment_record(config, (before, after)))
+        _write_dataset_metadata(
+            dataset,
+            {
+                "enriched": True,
+                **_provenance(config),
+                "enriched_at": _now(),
+                "coverage": {
+                    "codes": coverage[1]["rows"],
+                    "described": [row["description"] for row in coverage],
+                    "with_parent_codes": [row["parent_codes"] for row in coverage],
+                },
+            },
+        )
     if verbose:
-        _print_enrichment_report((before, after), stats)
+        _print_enrichment_report(coverage, stats)
     return output_path
 
 
-def _enrichment_record(
-    config: EnrichmentConfig,
-    coverage: tuple[dict[str, int], dict[str, int]],
-) -> dict[str, Any]:
-    """The :data:`DATASET_RECORD_KEY` record of an enrichment, for ``dataset.json``.
+#: Enrichment options recorded in ``dataset.json``, so that ``suMEDS-enrich <MEDS_ROOT>``
+#: can enrich again with them. Paths (Athena, a local pack source) are never recorded.
+RECORD_OPTIONS = (
+    "parent_codes",
+    "child_codes",
+    "sibling_codes",
+    "child_depth",
+    "exclude_self_parent_code",
+    "packs",
+    "loinc_hierarchy",
+)
 
-    It names the suMEDS version, the rules (registered name or file name, and the
-    sha256 of the file), the ontology pack source without local paths, whether an
-    Athena download was used (never its location), the UTC time, and the coverage of
-    ``codes.parquet`` before and after: its rows, and the rows with a description and
-    with parent codes.
+
+def provenance(
+    rules: str | None,
+    rules_sha256: str | None,
+    *,
+    athena: bool,
+    ontology_source: str | None,
+    ontology_ref: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    """The fields of a :data:`DATASET_RECORD_KEY` record that say how to enrich again.
+
+    ``rules`` is the registered name or file name of the rules, ``athena`` whether an
+    Athena download is used (its location is never recorded), and ``options`` holds
+    every :data:`RECORD_OPTIONS` value. The pack source is named by
+    :func:`~sumeds.ontology.describe_source` when rules use the packs.
     """
 
-    before, after = coverage
-    rules = config.rules
     return {
-        "enriched": True,
         "sumeds_version": version("sumeds"),
-        "rules": None if rules is None else rules.name or "inline",
-        "rules_sha256": None if rules is None else rules.sha256,
+        "rules": rules,
+        "rules_sha256": rules_sha256,
         "ontology_source": (
-            describe_source(config.ontology_source, config.ontology_ref)
-            if rules is not None and config.packs
+            describe_source(ontology_source, ontology_ref)
+            if rules is not None and options["packs"]
             else None
         ),
-        "athena": config.csv_dir is not None or config.postgres is not None,
-        "enriched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "coverage": {
-            "codes": after["rows"],
-            "described": [before["description"], after["description"]],
-            "with_parent_codes": [before["parent_codes"], after["parent_codes"]],
-        },
+        "athena": athena,
+        "options": {name: options[name] for name in RECORD_OPTIONS},
     }
+
+
+def _provenance(config: EnrichmentConfig) -> dict[str, Any]:
+    rules = config.rules
+    return provenance(
+        None if rules is None else rules.name or "inline",
+        None if rules is None else rules.sha256,
+        athena=config.csv_dir is not None or config.postgres is not None,
+        ontology_source=config.ontology_source,
+        ontology_ref=config.ontology_ref,
+        options={name: getattr(config, name) for name in RECORD_OPTIONS},
+    )
+
+
+def record_failure(
+    codes_path: str | Path,
+    fields: dict[str, Any],
+    error: BaseException,
+    retry: str,
+    *,
+    redact: Mapping[str, str] | None = None,
+) -> bool:
+    """Record a failed enrichment of a MEDS ``codes.parquet`` in the ``dataset.json`` beside it.
+
+    The record has ``"enriched": false``, the :func:`provenance` ``fields`` to enrich
+    again with, a short ``error`` (see :func:`short_error`), and the ``retry`` command. A
+    record of an earlier enrichment that succeeded is kept, as ``codes.parquet`` still
+    holds that enrichment. Returns whether a record was written.
+    """
+
+    dataset = _dataset_metadata_beside(Path(codes_path).expanduser().resolve())
+    if dataset is None:
+        return False
+    earlier = dataset.metadata.get(DATASET_RECORD_KEY)
+    if isinstance(earlier, dict) and earlier.get("enriched") is True:
+        return False
+    _write_dataset_metadata(
+        dataset,
+        {
+            "enriched": False,
+            **fields,
+            "attempted_at": _now(),
+            "error": short_error(error, redact=redact),
+            "retry": retry,
+        },
+    )
+    return True
+
+
+def short_error(
+    error: BaseException, *, redact: Mapping[str, str] | None = None
+) -> str:
+    """One line naming ``error``, for a record that must not hold table values.
+
+    Messages of configuration, file, network and pack errors are kept, on one line and
+    with each ``redact`` key (a local path, say) replaced by its value. Other errors,
+    such as Polars and Arrow errors, whose messages can quote values, are named by
+    their type only.
+    """
+
+    name = type(error).__name__
+    package = type(error).__module__.partition(".")[0]
+    if not isinstance(error, (OSError, ValueError, OntologyPackError)) or package in {
+        "polars",
+        "pyarrow",
+    }:
+        return name
+    message = " ".join(str(error).split())
+    # Longest first, so that a path is replaced before a path it contains.
+    for secret in sorted(redact or {}, key=len, reverse=True):
+        if secret:
+            message = message.replace(secret, (redact or {})[secret])
+    text = f"{name}: {message}" if message else name
+    return text if len(text) <= 300 else text[:297] + "..."
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(frozen=True)

@@ -106,6 +106,15 @@ it in place; the input is replaced only once the enriched table is complete.
 See [How enrichment works](enrichment.md), [Athena enrichment](athena.md), and
 [Rules and ontology packs](rules.md).
 
+`suMEDS-enrich MEDS_ROOT` enriches the dataset's `metadata/codes.parquet` in
+place (see [Enrich a MEDS dataset later](#enrich-a-meds-dataset-later)). It
+also takes:
+
+| Option | Meaning |
+|---|---|
+| `--soft-fail` | For ETL runs: if enrichment fails, leave the table as it was, print a warning with the command to retry, record the failure in the dataset's `dataset.json`, and exit 0 |
+| `--strict` | Exit with an error if enrichment fails: the default for `suMEDS-enrich`, and the way to turn off the soft failure of `suMEDS-extract` |
+
 ## Run an ETL and enrich it
 
 `suMEDS-extract` runs a [MEDS-Extract](https://github.com/mmcdermott/MEDS_extract)
@@ -134,6 +143,49 @@ enriches again. The enrichment is recorded in the output's
 `metadata/dataset.json` (see
 [Recorded in dataset.json](enrichment.md#recorded-in-datasetjson)), and a
 second run replaces that record.
+
+A failed enrichment never fails the ETL. A site without internet access, an
+unreachable Athena database, or a problem with the rules leaves
+`metadata/codes.parquet` exactly as MEDS-Extract wrote it, records the failure
+in `metadata/dataset.json` (`"enriched": false`), prints a warning with the
+command that enriches it later, and exits 0:
+
+```text
+suMEDS-enrich: warning: enrichment failed and /data/mc_med_meds/metadata/codes.parquet was left as it was; recorded as not enriched in /data/mc_med_meds/metadata/dataset.json: could not download https://raw.githubusercontent.com/rvandewater/sumeds-ontologies/v0.2.0/ontologies/index.json: <urlopen error [Errno 8] nodename nor servname provided, or not known>
+suMEDS-enrich: warning: once the cause is fixed, enrich it with:
+    suMEDS-enrich /data/mc_med_meds
+```
+
+Pass `-- --strict` to make a failed enrichment an error (exit code 1) instead.
+The arguments and the rules are still checked before the pipeline starts, so a
+mistake there stops before anything runs. A custom ETL runner that calls the
+enrichment itself gets the same behavior from
+`sumeds.cli.enrich_main([codes, "-o", codes, "--rules", NAME, "--soft-fail"])`.
+
+## Enrich a MEDS dataset later
+
+```bash
+suMEDS-enrich /data/mc_med_meds
+```
+
+Given a MEDS dataset root, `suMEDS-enrich` enriches its
+`metadata/codes.parquet` in place, with the rules and options recorded in
+its `metadata/dataset.json` by an earlier run, whether that run failed or
+succeeded. The result and the updated record are the same as those of a
+successful ETL run. Options given on the command line override the record;
+without a record, pass `--rules` or an Athena source. The record never holds
+a path, so an Athena download (`--athena-csv`, `--athena-postgres`), a rules
+file that no package registers (`--rules FILE`), or a local pack source
+(`--ontology-source DIR`) must be given again; the warning of the failed run
+lists them, and `suMEDS-enrich` says which one is missing.
+
+A site without internet access can copy a release of the
+[`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies) packs
+over and enrich from that directory:
+
+```bash
+suMEDS-enrich /data/mc_med_meds --ontology-source /media/sumeds-ontologies/ontologies
+```
 
 ## Output formats
 
