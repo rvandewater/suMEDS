@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import subprocess
+from importlib.metadata import version
 from pathlib import Path
 
 import meds
@@ -782,6 +785,131 @@ def test_standalone_enriches_in_place(athena_csv: Path, tmp_path: Path, capsys) 
     # The coverage report compares the input as it was, before the replace.
     report = capsys.readouterr().out
     assert "Athena matches added:      2 rows, 2 unique codes" in report
+
+
+_RECORD_KEYS = [
+    "enriched",
+    "sumeds_version",
+    "rules",
+    "rules_sha256",
+    "ontology_source",
+    "athena",
+    "enriched_at",
+    "coverage",
+]
+
+
+def test_enriching_a_meds_root_in_place_records_it_in_dataset_json(
+    meds_dataset: Path, athena_csv: Path
+) -> None:
+    metadata = meds_dataset / "metadata"
+    codes = metadata / "codes.parquet"
+    dataset_json = metadata / "dataset.json"
+    pl.DataFrame(
+        {"code": ["LAB//51491//units", "CMS Place of Service//02//end", "OTHER"]}
+    ).with_columns(
+        description=pl.lit(None, pl.String),
+        parent_codes=pl.Series([["LOINC/5803-2"], None, None]),
+    ).write_parquet(codes)
+    original = json.loads(dataset_json.read_text())
+    config = EnrichmentConfig(csv_dir=athena_csv)
+
+    enrich_file(codes, codes, config)
+
+    written = json.loads(dataset_json.read_text())
+    meds.DatasetMetadataSchema.validate(written)
+    # Every other key is kept, in order, and the record is added last.
+    assert list(written) == [*original, "sumeds_enrichment"]
+    assert {key: written[key] for key in original} == original
+    record = written["sumeds_enrichment"]
+    assert list(record) == _RECORD_KEYS
+    assert record["enriched"] is True
+    assert record["sumeds_version"] == version("sumeds")
+    assert record["rules"] is None and record["rules_sha256"] is None
+    assert record["ontology_source"] is None
+    # An Athena download is recorded as used, never by its location.
+    assert record["athena"] is True
+    assert str(athena_csv) not in dataset_json.read_text()
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["enriched_at"])
+    assert record["coverage"] == {
+        "codes": 3,
+        "described": [0, 2],
+        "with_parent_codes": [1, 2],
+    }
+    assert [p.name for p in metadata.iterdir() if p.name.startswith(".")] == []
+
+    # Enriching again replaces the record: same place, the new coverage.
+    enrich_file(codes, codes, config)
+    again = json.loads(dataset_json.read_text())
+    assert list(again) == list(written)
+    assert again["sumeds_enrichment"]["coverage"] == {
+        "codes": 3,
+        "described": [2, 2],
+        "with_parent_codes": [2, 2],
+    }
+
+
+def test_the_record_replaces_an_earlier_one_and_keeps_the_layout(
+    meds_dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SUMEDS_ONTOLOGY_SOURCE", raising=False)
+    dataset_json = meds_dataset / "metadata" / "dataset.json"
+    original = {
+        "dataset_name": "synthetic",
+        "sumeds_enrichment": {"enriched": True, "stale": True},
+        "code_modifier_columns": ["modifier"],
+        "custom_etl_key": {"kept": [1, 2]},
+    }
+    dataset_json.write_text(json.dumps(original, indent=4) + "\n")
+    rules = tmp_path / "my_rules.yaml"
+    rules.write_text(
+        "schema: sumeds-rules/0.1\n"
+        "hierarchy:\n"
+        "  - {id: path, pattern: '^(?P<path>.+)$', group: path, separator: '//'}\n"
+    )
+    codes = meds_dataset / "metadata" / "codes.parquet"
+    enrich_file(codes, codes, EnrichmentConfig(rules=rules, packs=True))
+
+    text = dataset_json.read_text()
+    written = json.loads(text)
+    assert list(written) == list(original)
+    assert written["custom_etl_key"] == {"kept": [1, 2]}
+    record = written["sumeds_enrichment"]
+    assert "stale" not in record
+    assert record["rules"] == "my_rules.yaml"
+    assert record["rules_sha256"] == hashlib.sha256(rules.read_bytes()).hexdigest()
+    assert record["ontology_source"] == "rvandewater/sumeds-ontologies@v0.2.0"
+    assert record["athena"] is False
+    # An indented file stays indented, with its final newline.
+    assert text.startswith('{\n  "dataset_name"') and text.endswith("}\n")
+
+
+def test_no_record_without_a_meds_dataset_json(
+    meds_dataset: Path, athena_csv: Path, tmp_path: Path
+) -> None:
+    config = EnrichmentConfig(csv_dir=athena_csv)
+    # A loose codes.parquet has no dataset.json to record in, and none is created.
+    loose = tmp_path / "loose" / "codes.parquet"
+    loose.parent.mkdir()
+    pl.read_parquet(meds_dataset / "metadata" / "codes.parquet").write_parquet(loose)
+    enrich_file(loose, loose, config)
+    assert sorted(p.name for p in loose.parent.iterdir()) == ["codes.parquet"]
+
+    # Enriching a MEDS root's codes into another file leaves its dataset.json alone.
+    dataset_json = meds_dataset / "metadata" / "dataset.json"
+    before = dataset_json.read_bytes()
+    enrich_file(
+        meds_dataset / "metadata" / "codes.parquet", tmp_path / "out.parquet", config
+    )
+    assert dataset_json.read_bytes() == before
+
+    # An invalid dataset.json is left as it is, with a warning; the codes are enriched.
+    dataset_json.write_text('{"dataset_name": 5}')
+    codes = meds_dataset / "metadata" / "codes.parquet"
+    with pytest.warns(UserWarning, match="not recording the enrichment"):
+        enrich_file(codes, codes, config)
+    assert dataset_json.read_text() == '{"dataset_name": 5}'
+    assert "concept_id" in pl.read_parquet_schema(codes)
 
 
 def _athena_icd(directory: Path) -> Path:

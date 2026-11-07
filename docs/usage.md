@@ -128,10 +128,12 @@ code is returned and nothing is enriched.
 
 suMEDS does not depend on MEDS-Extract: it runs the `meds-extract-run` on
 `PATH`, so install both in the same environment (an ETL package such as
-`MC-MED-MEDS` brings MEDS-Extract with it). MEDS-Extract's pipeline cannot be
-extended by a dataset config, which is why enrichment is a second step rather
-than a pipeline stage. Running the command again on an existing output reuses
-the stages MEDS-Extract has already finished and enriches again.
+`MC-MED-MEDS` brings MEDS-Extract with it). Running the command again on an
+existing output reuses the stages MEDS-Extract has already finished and
+enriches again. The enrichment is recorded in the output's
+`metadata/dataset.json` (see
+[Recorded in dataset.json](enrichment.md#recorded-in-datasetjson)), and a
+second run replaces that record.
 
 ## Output formats
 

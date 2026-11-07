@@ -109,8 +109,10 @@ merged without replacement. See [How enrichment works](enrichment.md).
 
 Parses and strictly validates a `sumeds-rules/0.1` YAML file, a mapping, or
 the name an installed package registered its rules under, into frozen
-`OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. See
-[Rules and ontology packs](rules.md).
+`OntologyRule`, `CrosswalkRule`, and `HierarchyRule` objects. The returned
+`OntologyRules` also carries `name` (the registered name or the file name) and
+`sha256` (of the file), which the `dataset.json` record uses; they take no part
+in comparisons. See [Rules and ontology packs](rules.md).
 
 ### `registered_rules() -> dict[str, str]`
 
@@ -155,7 +157,10 @@ enrich_file(
 Atomically enriches a supported standalone table. The output path may be the
 input path, to enrich a table in place, such as a MEDS dataset's
 `metadata/codes.parquet`: the result is staged and replaces the input only once
-complete. Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
+complete. When the output is a MEDS `codes.parquet` with a `dataset.json`
+beside it, the enrichment is recorded in that file under `sumeds_enrichment`
+(see [Recorded in dataset.json](enrichment.md#recorded-in-datasetjson)).
+Parquet, CSV, JSONL, and NDJSON inputs remain lazy; standard JSON arrays
 are necessarily eager because Polars provides no `scan_json` equivalent.
 `verbose=True` shows phase progress and prints before/after field coverage; the
 `suMEDS-enrich` CLI enables it by default. See

@@ -958,6 +958,23 @@ def test_online_runs_reuse_cached_manifests_that_match_the_index(
     ]
 
 
+def test_sources_are_described_without_paths_or_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sumeds.ontology import describe_source
+
+    assert describe_source() == "rvandewater/sumeds-ontologies@v0.2.0"
+    assert describe_source(ref="v9.9.9") == "rvandewater/sumeds-ontologies@v9.9.9"
+    assert describe_source("/home/me/ontologies") == "local"
+    assert describe_source("file:///home/me/ontologies") == "local"
+    assert (
+        describe_source("https://me:token@mirror.example.org:8443/o?sig=1#x")
+        == "https://mirror.example.org:8443/o"
+    )
+    monkeypatch.setenv("SUMEDS_ONTOLOGY_SOURCE", "/srv/ontologies")
+    assert describe_source() == "local"
+
+
 def test_unpinned_ref_warns_and_explicit_source_does_not(
     packs: Path, monkeypatch: pytest.MonkeyPatch, recwarn
 ) -> None:

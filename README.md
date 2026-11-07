@@ -145,8 +145,12 @@ command runs the ETL and enriches its metadata in place, with options for
 suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
 ```
 
-See [Registering rules in a package](docs/rules.md#registering-rules-in-a-package)
-and [Run an ETL and enrich it](docs/usage.md#run-an-etl-and-enrich-it).
+The output's `metadata/dataset.json` then records the enrichment under
+`sumeds_enrichment`: the suMEDS version, the rules and their sha256, the pack
+release, whether Athena was used, and the coverage before and after. See
+[Registering rules in a package](docs/rules.md#registering-rules-in-a-package),
+[Run an ETL and enrich it](docs/usage.md#run-an-etl-and-enrich-it), and
+[Recorded in dataset.json](docs/enrichment.md#recorded-in-datasetjson).
 
 Codes are validated against ontology packs kept in a separately versioned
 data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard

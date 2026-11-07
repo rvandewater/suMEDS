@@ -5,18 +5,27 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import subprocess
-from dataclasses import replace
+import warnings
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
 
+import meds
 import polars as pl
 from tqdm.auto import tqdm
 
 from .config import EnrichmentConfig
 from .io import MAP_DTYPE, output_format, scan_table, sink_table
-from .ontology import CrosswalkRule, OntologyPacks, PackEntry
+from .ontology import CrosswalkRule, OntologyPacks, PackEntry, describe_source
+
+#: Top-level ``metadata/dataset.json`` key in which enriching a MEDS dataset's
+#: ``codes.parquet`` records how it was enriched.
+DATASET_RECORD_KEY = "sumeds_enrichment"
 
 _RELATIONSHIPS = {
     "parent_codes": "parent",
@@ -349,6 +358,10 @@ def enrich_file(
     ``output_path`` may be ``input_path``: the enriched table is written to a staged
     file first and replaces the input only once it is complete, so a failed
     enrichment leaves the input as it was.
+
+    When ``output_path`` is a MEDS ``codes.parquet`` with a ``dataset.json`` beside it
+    (``metadata/`` of a MEDS dataset), the enrichment is recorded in that file under
+    :data:`DATASET_RECORD_KEY`, replacing an earlier record.
     """
 
     input_path = Path(input_path).expanduser().resolve()
@@ -358,6 +371,8 @@ def enrich_file(
     staged = output_path.with_name(
         f".{output_path.name}.{uuid4().hex}.tmp{output_path.suffix}"
     )
+    dataset = _dataset_metadata_beside(output_path)
+    measure = verbose or dataset is not None
     stats: dict[str, Any] = {}
     with tqdm(
         total=4,
@@ -378,21 +393,116 @@ def enrich_file(
             progress.set_description("Writing output")
             sink_table(enriched, staged, format_)
             # Measured before the replace, which in place overwrites the input.
-            before = _coverage(source) if verbose else None
+            before = _coverage(source, links=verbose) if measure else None
             staged.replace(output_path)
             progress.update()
-            if verbose:
+            if measure:
                 progress.set_description("Calculating coverage")
-                report = before, _coverage(scan_table(output_path))
+                after = _coverage(scan_table(output_path), links=verbose)
             progress.update()
         finally:
             staged.unlink(missing_ok=True)
+    if dataset is not None:
+        _write_dataset_metadata(dataset, _enrichment_record(config, (before, after)))
     if verbose:
-        _print_enrichment_report(report, stats)
+        _print_enrichment_report((before, after), stats)
     return output_path
 
 
-def _coverage(frame: pl.LazyFrame) -> dict[str, int]:
+def _enrichment_record(
+    config: EnrichmentConfig,
+    coverage: tuple[dict[str, int], dict[str, int]],
+) -> dict[str, Any]:
+    """The :data:`DATASET_RECORD_KEY` record of an enrichment, for ``dataset.json``.
+
+    It names the suMEDS version, the rules (registered name or file name, and the
+    sha256 of the file), the ontology pack source without local paths, whether an
+    Athena download was used (never its location), the UTC time, and the coverage of
+    ``codes.parquet`` before and after: its rows, and the rows with a description and
+    with parent codes.
+    """
+
+    before, after = coverage
+    rules = config.rules
+    return {
+        "enriched": True,
+        "sumeds_version": version("sumeds"),
+        "rules": None if rules is None else rules.name or "inline",
+        "rules_sha256": None if rules is None else rules.sha256,
+        "ontology_source": (
+            describe_source(config.ontology_source, config.ontology_ref)
+            if rules is not None and config.packs
+            else None
+        ),
+        "athena": config.csv_dir is not None or config.postgres is not None,
+        "enriched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "coverage": {
+            "codes": after["rows"],
+            "described": [before["description"], after["description"]],
+            "with_parent_codes": [before["parent_codes"], after["parent_codes"]],
+        },
+    }
+
+
+@dataclass(frozen=True)
+class _DatasetMetadata:
+    """A read, validated ``dataset.json`` and how it was laid out."""
+
+    path: Path
+    metadata: dict[str, Any]
+    indent: int | None
+    newline: bool
+
+
+def _dataset_metadata_beside(codes_path: Path) -> _DatasetMetadata | None:
+    """The ``dataset.json`` beside a MEDS ``codes.parquet``, read and validated.
+
+    ``None`` for any other output, and, with a warning, for a ``dataset.json`` that is
+    not valid MEDS dataset metadata, which is left as it is.
+    """
+
+    if codes_path.name != Path(meds.code_metadata_filepath).name:
+        return None
+    path = codes_path.with_name(Path(meds.dataset_metadata_filepath).name)
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+        metadata = json.loads(text)
+        if not isinstance(metadata, dict):
+            raise ValueError("it is not a JSON object")
+        meds.DatasetMetadataSchema.validate(metadata)
+    except Exception as error:
+        warnings.warn(
+            f"not recording the enrichment in {path}: it is not valid MEDS dataset "
+            f"metadata ({error})",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+    # Written back as it was laid out: compact as MEDS-Extract writes it, or indented.
+    return _DatasetMetadata(
+        path, metadata, 2 if "\n" in text.strip() else None, text.endswith("\n")
+    )
+
+
+def _write_dataset_metadata(dataset: _DatasetMetadata, record: dict[str, Any]) -> None:
+    """Atomically add or replace the record, keeping every other key in its place."""
+
+    metadata = {**dataset.metadata, DATASET_RECORD_KEY: record}
+    meds.DatasetMetadataSchema.validate(metadata)
+    text = json.dumps(metadata, ensure_ascii=False, indent=dataset.indent)
+    staged = dataset.path.with_name(f".{dataset.path.name}.{uuid4().hex}.tmp")
+    try:
+        staged.write_text(text + ("\n" if dataset.newline else ""), encoding="utf-8")
+        os.replace(staged, dataset.path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _coverage(frame: pl.LazyFrame, *, links: bool = True) -> dict[str, int]:
+    """Count rows, codes and filled fields; ``links`` also counts parent-code entries."""
+
     schema = frame.collect_schema()
     expressions = [
         pl.len().alias("rows"),
@@ -420,7 +530,7 @@ def _coverage(frame: pl.LazyFrame) -> dict[str, int]:
     }
     coverage["dataset_parent_links"] = coverage["parent_links"] = 0
     coverage["named_parent_links"] = 0
-    if "parent_codes" in schema:
+    if links and "parent_codes" in schema:
         parents = pl.col("parent_codes")
         if schema["parent_codes"] == pl.String:
             parents = parents.str.split("|")

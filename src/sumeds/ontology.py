@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import warnings
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from importlib.resources import files
 from pathlib import Path
@@ -209,11 +209,18 @@ class HierarchyRule:
 
 @dataclass(frozen=True)
 class OntologyRules:
-    """Parsed ``sumeds-rules/0.1`` file."""
+    """Parsed ``sumeds-rules/0.1`` file.
+
+    ``name`` and ``sha256`` record where :func:`load_rules` read the rules: the registered
+    name or the file name, and the sha256 of the file (of the canonical JSON of a mapping).
+    They are provenance only and take no part in comparisons.
+    """
 
     ontology: tuple[OntologyRule, ...] = ()
     hierarchy: tuple[HierarchyRule, ...] = ()
     crosswalk: tuple[CrosswalkRule, ...] = ()
+    name: str | None = field(default=None, compare=False)
+    sha256: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if len(self.ontology) + len(self.crosswalk) > MAX_ONTOLOGY_RULES:
@@ -274,18 +281,27 @@ def load_rules(source: str | Path | Mapping[str, Any]) -> OntologyRules:
     as for MEDS-Extract specs.
     """
 
+    name: str | None
     if isinstance(source, Mapping):
         raw: Any = dict(source)
         where = "rules"
+        name = None
+        sha256 = hashlib.sha256(
+            json.dumps(raw, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
     else:
         if str(source) in registered_rules():
             path = registered_rules_path(str(source))
+            name = str(source)
         else:
             path = Path(source).expanduser()
+            name = path.name
         if not path.is_file():
             raise FileNotFoundError(f"rules file not found: {path}")
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = path.read_bytes()
+        raw = yaml.safe_load(data.decode("utf-8")) or {}
         where = str(path)
+        sha256 = hashlib.sha256(data).hexdigest()
     if not isinstance(raw, dict):
         raise ValueError(f"{where}: the rules file must be a mapping")
     unknown = set(raw) - {"schema", "ontology", "crosswalk", "hierarchy"}
@@ -309,7 +325,7 @@ def load_rules(source: str | Path | Mapping[str, Any]) -> OntologyRules:
         _hierarchy_rule(item, f"{where}: hierarchy[{index}]", seen, names)
         for index, item in enumerate(_list(raw.get("hierarchy"), f"{where}: hierarchy"))
     )
-    return OntologyRules(ontology, hierarchy, crosswalk)
+    return OntologyRules(ontology, hierarchy, crosswalk, name=name, sha256=sha256)
 
 
 def _list(value: Any, where: str) -> list[Any]:
@@ -504,6 +520,25 @@ def resolve_source(source: str | None = None, ref: str = DEFAULT_REF) -> str:
     """
 
     return source or os.environ.get(SOURCE_ENV) or DEFAULT_SOURCE.format(ref=ref)
+
+
+def describe_source(source: str | None = None, ref: str = DEFAULT_REF) -> str:
+    """Name a pack source without local paths or credentials, for provenance records.
+
+    The default repository is ``rvandewater/sumeds-ontologies@<ref>``; another remote source
+    is its URL without user info, query or fragment; a local directory or ``file://`` URL
+    is ``local``.
+    """
+
+    explicit = source or os.environ.get(SOURCE_ENV)
+    if not explicit:
+        return f"{DATA_REPOSITORY}@{ref}"
+    parsed = urllib.parse.urlsplit(explicit)
+    if parsed.scheme not in {"http", "https"}:
+        return "local"
+    host = parsed.hostname or ""
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 @dataclass(frozen=True)

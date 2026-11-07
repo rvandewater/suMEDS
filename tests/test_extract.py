@@ -2,18 +2,21 @@
 
 A throwaway package on ``sys.path`` holds a rules file and the entry-point lookup is patched to
 register it, so no distribution is installed. ``meds-extract-run`` is a fake on ``PATH`` that
-records its arguments and writes a two-code ``metadata/codes.parquet``. The rules are hierarchy
-rules over an empty ontology source, so nothing is read over the network.
+records its arguments and writes a two-code ``metadata/codes.parquet`` and a
+``metadata/dataset.json``. The rules are hierarchy rules over an empty ontology source, so
+nothing is read over the network.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
+import meds
 import polars as pl
 import pytest
 
@@ -45,6 +48,10 @@ if returncode == 0:
     pl.DataFrame({"code": ["DX//A|B", "DX//A"], "description": [None, "A"]}).write_parquet(
         out / "metadata" / "codes.parquet"
     )
+    # As MEDS-Extract's finalize stage writes it: compact JSON.
+    (out / "metadata" / "dataset.json").write_text(json.dumps(
+        {"dataset_name": "DEMO", "etl_name": "MEDS_extract", "meds_version": "0.4.1"}
+    ))
 sys.exit(returncode)
 """
 
@@ -154,7 +161,45 @@ def test_extract_runs_the_pipeline_then_enriches_in_place(
     codes = _codes(out)
     assert codes["DX//A|B"]["parent_codes"] == ["DX//A"]
     assert codes["DX//A"]["description"] == "A"
-    assert sorted(p.name for p in (out / "metadata").iterdir()) == ["codes.parquet"]
+    assert sorted(p.name for p in (out / "metadata").iterdir()) == [
+        "codes.parquet",
+        "dataset.json",
+    ]
+
+    # dataset.json records the enrichment and still validates.
+    dataset = json.loads((out / "metadata" / "dataset.json").read_text())
+    meds.DatasetMetadataSchema.validate(dataset)
+    assert list(dataset) == [
+        "dataset_name",
+        "etl_name",
+        "meds_version",
+        "sumeds_enrichment",
+    ]
+    record = dataset["sumeds_enrichment"]
+    assert record["enriched"] is True
+    assert record["rules"] == "DEMO"
+    assert record["rules_sha256"] == hashlib.sha256(registered.read_bytes()).hexdigest()
+    assert record["ontology_source"] == "local"
+    assert record["athena"] is False
+    assert record["coverage"] == {
+        "codes": 2,
+        "described": [1, 1],
+        "with_parent_codes": [0, 1],
+    }
+
+    # Running again on the same output replaces the record.
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        RULES
+        + "  - {id: again, pattern: '^(?P<path>.+)$', group: path, separator: '|'}\n"
+    )
+    assert extract_main([*overrides, "--", "--no-verbose", "--rules", str(rules)]) == 0
+    dataset = json.loads((out / "metadata" / "dataset.json").read_text())
+    assert list(dataset)[-1] == "sumeds_enrichment"
+    assert dataset["sumeds_enrichment"]["rules"] == "rules.yaml"
+    assert dataset["sumeds_enrichment"]["rules_sha256"] == (
+        hashlib.sha256(rules.read_bytes()).hexdigest()
+    )
 
 
 def test_extract_takes_explicit_rules_for_any_spec(
