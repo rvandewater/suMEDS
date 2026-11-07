@@ -914,6 +914,67 @@ def test_default_source_is_a_pinned_release(
     assert "ICD10CM" in OntologyPacks(offline=True).vocabularies()
 
 
+def test_online_runs_reuse_cached_manifests_that_match_the_index(
+    packs: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sumeds import ontology
+
+    remote = _FakeRemote(packs)
+    monkeypatch.setattr("sumeds.ontology.urllib.request.urlopen", remote)
+    monkeypatch.setattr(
+        ontology, "DEFAULT_INDEX_SHA256", _sha((packs / "index.json").read_bytes())
+    )
+
+    def fetched(client: OntologyPacks) -> list[str]:
+        remote.requests.clear()
+        assert set(client.lookup("ICD10CM", ["I50.23"])) == {"I50.23"}
+        assert client.crosswalk("demo/lab_loinc")
+        return sorted(url.split("/ontologies/", 1)[1] for url in remote.requests)
+
+    everything = [
+        "ICD10CM/test/I.csv",
+        "ICD10CM/test/manifest.json",
+        "crosswalks/demo/lab_loinc.csv",
+        "crosswalks/demo/manifest.json",
+        "index.json",
+    ]
+    assert fetched(OntologyPacks()) == everything
+    # The pinned release is read from the cache on the next online run, manifests included.
+    assert fetched(OntologyPacks()) == []
+
+    # Another source fetches its index again, and reuses every manifest that matches it ...
+    assert fetched(OntologyPacks(REMOTE)) == everything
+    assert fetched(OntologyPacks(REMOTE)) == ["index.json"]
+
+    # ... until a manifest changes and the index lists its new digest.
+    manifest = packs / "ICD10CM" / "test" / "manifest.json"
+    manifest.write_bytes(manifest.read_bytes().replace(b'"test"', b'"test2"'))
+    index = json.loads((packs / "index.json").read_text())
+    index["vocabularies"]["ICD10CM"]["sha256"] = _sha(manifest.read_bytes())
+    (packs / "index.json").write_text(json.dumps(index))
+    assert fetched(OntologyPacks(REMOTE)) == [
+        "ICD10CM/test/manifest.json",
+        "index.json",
+    ]
+
+
+def test_sources_are_described_without_paths_or_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sumeds.ontology import describe_source
+
+    assert describe_source() == "rvandewater/sumeds-ontologies@v0.2.0"
+    assert describe_source(ref="v9.9.9") == "rvandewater/sumeds-ontologies@v9.9.9"
+    assert describe_source("/home/me/ontologies") == "local"
+    assert describe_source("file:///home/me/ontologies") == "local"
+    assert (
+        describe_source("https://me:token@mirror.example.org:8443/o?sig=1#x")
+        == "https://mirror.example.org:8443/o"
+    )
+    monkeypatch.setenv("SUMEDS_ONTOLOGY_SOURCE", "/srv/ontologies")
+    assert describe_source() == "local"
+
+
 def test_unpinned_ref_warns_and_explicit_source_does_not(
     packs: Path, monkeypatch: pytest.MonkeyPatch, recwarn
 ) -> None:

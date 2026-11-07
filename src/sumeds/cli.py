@@ -3,15 +3,38 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+import hashlib
+import json
+import os
+import shlex
+import sys
+import urllib.parse
+import urllib.request
+from dataclasses import fields, replace
 from importlib.metadata import version
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
+
+import meds
 
 from .config import EnrichmentConfig, SummaryConfig
-from .enrich import enrich_file
-from .ontology import DEFAULT_REF
+from .enrich import (
+    DATASET_RECORD_KEY,
+    RECORD_OPTIONS,
+    enrich_file,
+    provenance,
+    record_failure,
+)
+from .ontology import (
+    DATA_REPOSITORY,
+    DEFAULT_REF,
+    SOURCE_ENV,
+    registered_rules,
+    registered_rules_path,
+)
 from .summary import summarize
+
+ENRICH_PROG = "suMEDS-enrich"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,17 +151,23 @@ def build_enrich_parser() -> argparse.ArgumentParser:
     """Build the standalone enrichment CLI parser."""
 
     parser = argparse.ArgumentParser(
-        prog="suMEDS-enrich",
+        prog=ENRICH_PROG,
         description="Enrich MEDS metadata or a suMEDS summary from OHDSI Athena "
-        "and/or rules over public ontology packs.",
+        "and/or rules over public ontology packs. Given a MEDS dataset root, enrich "
+        "its metadata/codes.parquet in place, with the rules and options recorded in "
+        "its metadata/dataset.json unless options override them.",
     )
-    parser.add_argument("input", type=Path, help="metadata or summary table")
+    parser.add_argument(
+        "input",
+        type=Path,
+        help="metadata or summary table, or a MEDS dataset root",
+    )
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        required=True,
-        help="enriched output table; may be the input, to enrich it in place",
+        help="enriched output table, required for a table; may be the input, to "
+        "enrich it in place. A dataset root is always enriched in place",
     )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument("--athena-csv", type=Path, help="Athena CSV directory")
@@ -153,18 +182,63 @@ def build_enrich_parser() -> argparse.ArgumentParser:
         default=True,
         help="print the coverage and rule report (default: enabled)",
     )
+    failure = parser.add_mutually_exclusive_group()
+    failure.add_argument(
+        "--soft-fail",
+        dest="soft_fail",
+        action="store_true",
+        default=None,
+        help="for ETL runs: if enrichment fails, leave the table as it was, warn "
+        "with the command to retry, record the failure in dataset.json, and exit 0",
+    )
+    failure.add_argument(
+        "--strict",
+        dest="soft_fail",
+        action="store_false",
+        default=None,
+        help="exit with an error if enrichment fails (the default here; "
+        "suMEDS-extract soft-fails unless given this)",
+    )
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
 
 def enrich_main(argv: Sequence[str] | None = None) -> int:
-    """Run standalone Athena enrichment."""
+    """Run standalone enrichment; return an exit code.
+
+    With ``--soft-fail``, as ETLs run it, a failed enrichment leaves the table as it
+    was, prints a warning with the command to retry, records the failure in the
+    MEDS ``dataset.json`` beside the table, and returns 0.
+    """
 
     parser = build_enrich_parser()
     args = parser.parse_args(argv)
+    hint = ""
+    if args.input.is_dir():
+        if args.output is not None:
+            parser.error(
+                "a MEDS dataset root is enriched in place; -o/--output is only for a table"
+            )
+        codes = args.input / meds.code_metadata_filepath
+        if not codes.is_file():
+            parser.error(
+                f"{args.input} is a directory, but not a MEDS dataset root with a "
+                f"{meds.code_metadata_filepath}"
+            )
+        args.input = args.output = codes
+        try:
+            if not _apply_record(args, codes):
+                hint = (
+                    f" (its dataset.json has no {DATASET_RECORD_KEY} record to reuse)"
+                )
+        except ValueError as exc:
+            parser.error(str(exc))
+    elif args.output is None:
+        parser.error("the following arguments are required: -o/--output")
     if args.athena_csv is None and args.athena_postgres is None and args.rules is None:
         parser.error(
             "one of the arguments --athena-csv --athena-postgres --rules is required"
+            + hint
         )
     try:
         output = enrich_file(
@@ -174,9 +248,169 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
             verbose=args.verbose,
         )
     except Exception as exc:
-        parser.exit(1, f"suMEDS-enrich: error: {exc}\n")
+        if not args.soft_fail:
+            parser.exit(1, f"{ENRICH_PROG}: error: {exc}\n")
+        _soft_fail(args, exc)
+        return 0
     print(f"Wrote {output}")
     return 0
+
+
+def _apply_record(args: argparse.Namespace, codes: Path) -> bool:
+    """Fill the options not given from the dataset's enrichment record, if it has one.
+
+    Paths are never recorded, so an Athena download, a rules file that is not
+    registered, or a local pack source must be given again. Returns whether a record
+    was found.
+    """
+
+    path = codes.with_name(Path(meds.dataset_metadata_filepath).name)
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    record = metadata.get(DATASET_RECORD_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(record, dict):
+        return False
+    where = f"the {DATASET_RECORD_KEY} record of {path}"
+    options = record.get("options") or {}
+    if not isinstance(options, dict):
+        raise ValueError(f"{where} has invalid options")
+    for name in RECORD_OPTIONS:
+        if getattr(args, name) is None and name in options:
+            setattr(args, name, options[name])
+
+    rules = record.get("rules")
+    if args.rules is None and rules is not None:
+        if not isinstance(rules, str) or rules not in registered_rules():
+            raise ValueError(
+                f"{where} names the rules {rules!r}, which no installed package "
+                "registers; pass the rules file with --rules FILE"
+            )
+        args.rules = Path(rules)  # as the CLI passes a name
+    if (
+        record.get("athena") is True
+        and args.athena_csv is None
+        and args.athena_postgres is None
+    ):
+        raise ValueError(
+            f"{where} used an Athena download, whose location is not recorded; pass "
+            "--athena-csv DIR or --athena-postgres CONNINFO, or enrich the table "
+            "itself (INPUT -o OUTPUT) to choose the sources anew"
+        )
+    source = record.get("ontology_source")
+    if (
+        isinstance(source, str)
+        and args.ontology_source is None
+        and not os.environ.get(SOURCE_ENV)
+    ):
+        if source.startswith(f"{DATA_REPOSITORY}@"):
+            if args.ontology_ref is None:
+                args.ontology_ref = source.partition("@")[2]
+        elif source.startswith(("http://", "https://")):
+            args.ontology_source = source
+        elif args.packs is not False:
+            raise ValueError(
+                f"{where} used a local ontology pack source, whose location is not "
+                "recorded; pass --ontology-source DIR"
+            )
+    return True
+
+
+def _soft_fail(args: argparse.Namespace, error: Exception) -> None:
+    """Record the failure beside the table and print a warning with the retry command."""
+
+    output = args.output.expanduser().resolve()
+    fields_ = _provenance_from_args(args)
+    # What the record cannot hold: (flag, value for the warning, placeholder).
+    needs = []
+    if args.rules is not None and fields_["rules"] not in registered_rules():
+        needs.append(("--rules", str(args.rules), "<RULES_FILE>"))
+    if args.athena_csv is not None:
+        needs.append(("--athena-csv", str(args.athena_csv), "<ATHENA_DIR>"))
+    if args.athena_postgres is not None:
+        needs.append(("--athena-postgres", "<CONNINFO>", "<CONNINFO>"))
+    if fields_["ontology_source"] == "local" and not os.environ.get(SOURCE_ENV):
+        needs.append(("--ontology-source", str(args.ontology_source), "<PACKS_DIR>"))
+    # The error in the record names none of those paths, nor the connection.
+    redact: dict[str, str] = {}
+
+    def hide(value: str | Path, placeholder: str) -> None:
+        path = Path(value).expanduser()
+        for form in (str(value), str(path), str(path.resolve())):
+            redact[form] = placeholder
+
+    if needs and needs[0][0] == "--rules":
+        hide(args.rules, "<RULES_FILE>")
+    if args.athena_csv is not None:
+        hide(args.athena_csv, "<ATHENA_DIR>")
+    if args.athena_postgres is not None:
+        redact[args.athena_postgres] = "<CONNINFO>"
+    source = args.ontology_source or os.environ.get(SOURCE_ENV)
+    if fields_["ontology_source"] == "local" and source:
+        parsed = urllib.parse.urlsplit(source)
+        hide(
+            urllib.request.url2pathname(parsed.path)
+            if parsed.scheme == "file"
+            else source,
+            "<PACKS_DIR>",
+        )
+    written = record_failure(
+        output,
+        fields_,
+        error,
+        " ".join([ENRICH_PROG, "<MEDS_ROOT>", *(f"{f} {p}" for f, _, p in needs)]),
+        redact=redact,
+    )
+    # A MEDS dataset's codes are enriched again through its root, with the recorded options.
+    root = output.parent.parent
+    if (
+        output == (root / meds.code_metadata_filepath)
+        and (root / meds.dataset_metadata_filepath).is_file()
+    ):
+        retry = [ENRICH_PROG, str(root)]
+    else:
+        retry = [ENRICH_PROG, str(args.input), "-o", str(args.output)]
+    retry += [item for flag, value, _ in needs for item in (flag, value)]
+    note = (
+        f"; recorded as not enriched in {root / meds.dataset_metadata_filepath}"
+        if written
+        else ""
+    )
+    print(
+        f"{ENRICH_PROG}: warning: enrichment failed and {output} was left as it "
+        f"was{note}: {error}\n"
+        f"{ENRICH_PROG}: warning: once the cause is fixed, enrich it with:\n"
+        f"    {shlex.join(retry)}",
+        file=sys.stderr,
+    )
+
+
+def _provenance_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    """The record fields of the enrichment ``args`` ask for, valid or not."""
+
+    defaults = {item.name: item.default for item in fields(EnrichmentConfig)}
+    rules = sha256 = None
+    if args.rules is not None:
+        name = str(args.rules)
+        registered = name in registered_rules()
+        rules = name if registered else args.rules.name
+        try:
+            path = registered_rules_path(name) if registered else args.rules
+            sha256 = hashlib.sha256(Path(path).expanduser().read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            pass
+    return provenance(
+        rules,
+        sha256,
+        athena=args.athena_csv is not None or args.athena_postgres is not None,
+        ontology_source=args.ontology_source,
+        ontology_ref=args.ontology_ref or DEFAULT_REF,
+        options={
+            name: defaults[name] if getattr(args, name) is None else getattr(args, name)
+            for name in RECORD_OPTIONS
+        },
+    )
 
 
 def _add_hierarchy_arguments(parser: argparse.ArgumentParser) -> None:

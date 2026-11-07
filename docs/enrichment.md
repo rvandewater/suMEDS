@@ -378,8 +378,76 @@ uv run suMEDS-enrich /data/MEDS/metadata/codes.parquet \
 ```
 
 `suMEDS-enrich` takes the same source, hierarchy and ontology options as
-`suMEDS`. It reads and writes Parquet, CSV, JSON, JSONL and NDJSON. Input and
-output must be different paths, and the destination is replaced atomically.
+`suMEDS`. It reads and writes Parquet, CSV, JSON, JSONL and NDJSON. The output
+may be the input, to enrich a table in place; the destination is replaced
+atomically, only once the enriched table is complete.
+
+## Recorded in dataset.json
+
+When the enriched table is a MEDS dataset's `metadata/codes.parquet`, that is,
+a `codes.parquet` with a `dataset.json` beside it, suMEDS records the
+enrichment in that `dataset.json` under the top-level key `sumeds_enrichment`.
+This covers `suMEDS-extract`, `suMEDS-enrich` with `-o` set to the dataset's
+own `metadata/codes.parquet` (or another dataset's), and `enrich_file` in
+Python. For example:
+
+```json
+{
+  "dataset_name": "MIMIC-IV",
+  "etl_name": "MEDS_extract",
+  "meds_version": "0.4.1",
+  "created_at": "2026-11-07T10:00:00",
+  "sumeds_enrichment": {
+    "enriched": true,
+    "sumeds_version": "0.6.1",
+    "rules": "MIMIC-IV",
+    "rules_sha256": "58e31fac423aa3f66b09a1d1f40ef25cb32696e6184f6eaece2bd381c8d56328",
+    "ontology_source": "rvandewater/sumeds-ontologies@v0.2.0",
+    "athena": false,
+    "options": {
+      "parent_codes": true, "child_codes": false, "sibling_codes": false, "child_depth": 3,
+      "exclude_self_parent_code": false, "packs": true, "loinc_hierarchy": false
+    },
+    "enriched_at": "2026-11-07T18:38:56Z",
+    "coverage": {"codes": 3, "described": [1, 3], "with_parent_codes": [0, 2]}
+  }
+}
+```
+
+| Field | Value |
+|---|---|
+| `enriched` | `true`, or `false` for an enrichment that failed inside an ETL (see below); a dataset that enrichment never ran on has no `sumeds_enrichment` key |
+| `sumeds_version` | The suMEDS version that enriched it |
+| `rules` | The name the rules are registered under, the rules file's name, or `inline` for rules given as a mapping in Python; `null` without rules |
+| `rules_sha256` | sha256 of the rules file (of the canonical JSON of a mapping); `null` without rules |
+| `ontology_source` | The pack source when rules use the packs: `rvandewater/sumeds-ontologies@<ref>` by default, the URL of another remote source (without credentials or query), or `local`; otherwise `null` |
+| `athena` | Whether an Athena download (CSV directory or PostgreSQL) was used. Its location is never written |
+| `options` | The hierarchy and pack options, so that `suMEDS-enrich MEDS_ROOT` can enrich again with them |
+| `enriched_at` | UTC time of the enrichment, ISO 8601 |
+| `coverage` | Rows of `codes.parquet` (`codes`), and rows with a `description` and with `parent_codes`, as `[before, after]` |
+
+An enrichment that fails inside an ETL (`suMEDS-extract`, or `--soft-fail`)
+leaves `codes.parquet` as it was and records `"enriched": false` with the
+same fields up to `options`, then `attempted_at`, a one-line `error`, and the
+`retry` command, for example
+`"error": "OntologyPackError: could not download https://...index.json: <urlopen error ...>"`
+and `"retry": "suMEDS-enrich <MEDS_ROOT>"`. The error is kept short and holds
+no table values: errors whose messages could quote them (Polars, Arrow,
+PostgreSQL) are named by their type only, and the paths the record does not
+keep (Athena, a rules file, a local pack source) and a PostgreSQL connection
+string are replaced by placeholders such as `<ATHENA_DIR>`.
+If the dataset already has the record of a successful enrichment,
+`codes.parquet` still holds that enrichment, so that record is kept. See
+[Enrich a MEDS dataset later](usage.md#enrich-a-meds-dataset-later).
+
+The record is counts and provenance only. Every other key stays as it was, in
+its place, and the file keeps its layout (compact, as MEDS-Extract writes it,
+or indented). Enriching again replaces the record. The file is written to a
+temporary file and then renamed, and still passes
+`meds.DatasetMetadataSchema.validate`, which allows extra keys. A loose
+`codes.parquet` without a `dataset.json` beside it gets no record, and none is
+created. A `dataset.json` that is not valid MEDS dataset metadata is left
+untouched, with a warning.
 
 ## Privacy ordering
 
