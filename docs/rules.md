@@ -248,11 +248,12 @@ sha prints a warning. Each suMEDS release states which data release it pins.
 Every manifest is checked against the sha256 in `index.json`, and every shard
 or table against its manifest. A mismatch is an error. Remote files are cached
 under `${XDG_CACHE_HOME:-~/.cache}/sumeds/ontologies/<source>/`. For the pinned
-default release, everything is reused from the cache. For other sources, the
-index and manifests are refreshed on each online run, and shards are reused
-while their checksum matches. `--offline` (`enrichment.offline: true`) uses
-only the cache or a local source, and fails with a clear message if a needed
-file is missing.
+default release, everything is reused from the cache, so a run whose files are
+all cached makes no network request. For other sources, the index is refreshed
+on each online run, and manifests, shards and tables are reused while their
+checksum matches the index or manifest that lists them. `--offline`
+(`enrichment.offline: true`) uses only the cache or a local source, and fails
+with a clear message if a needed file is missing.
 
 ```bash
 uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \

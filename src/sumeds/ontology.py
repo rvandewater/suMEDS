@@ -699,9 +699,7 @@ class OntologyPacks:
                 raise OntologyPackError(
                     f"no crosswalk dataset {dataset!r} at {self.source}"
                 )
-            manifest = _json(
-                self._get(relative, entry.get("sha256"), refresh=True), relative
-            )
+            manifest = _json(self._get_manifest(relative, entry), relative)
             if manifest.get("schema") != CROSSWALK_SCHEMA or not isinstance(
                 manifest.get("tables"), dict
             ):
@@ -831,9 +829,7 @@ class OntologyPacks:
             parts = relative.split("/")
             if len(parts) < 2 or not all(_SAFE_NAME.match(part) for part in parts):
                 raise OntologyPackError(f"unsafe manifest path in index: {relative!r}")
-            manifest = _json(
-                self._get(relative, entry.get("sha256"), refresh=True), relative
-            )
+            manifest = _json(self._get_manifest(relative, entry), relative)
             if (
                 manifest.get("schema") != PACK_SCHEMA
                 or manifest.get("vocabulary") != vocabulary
@@ -935,6 +931,17 @@ class OntologyPacks:
             ancestors.append(parent)
             parent = rows[parent][1]
         return ancestors
+
+    def _get_manifest(self, relative: str, entry: Mapping[str, Any]) -> bytes:
+        """A manifest, reused from the cache while it matches the index's sha256.
+
+        The index (pinned, or fetched fresh on this run) lists each manifest's sha256, so a
+        cached copy with that digest is the current manifest. Only a manifest the index gives
+        no digest for is fetched again on every online run.
+        """
+
+        sha256 = entry.get("sha256")
+        return self._get(relative, sha256, refresh=not sha256)
 
     def _get(
         self,
