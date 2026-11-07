@@ -114,11 +114,69 @@ also takes:
 |---|---|
 | `--soft-fail` | For ETL runs: if enrichment fails, leave the table as it was, print a warning with the command to retry, record the failure in the dataset's `dataset.json`, and exit 0 |
 | `--strict` | Exit with an error if enrichment fails: the default for `suMEDS-enrich`, and the way to turn off the soft failure of `suMEDS-extract` |
+| `--prefetch` | Instead of enriching, download the whole ontology pack release into the cache for later `--offline` runs (see [Clusters without internet access](#clusters-without-internet-access-on-compute-nodes)) |
 
-## Run an ETL and enrich it
+## Enrich inside a MEDS-Extract ETL
 
+From MEDS-Extract 0.8.1, a spec can run suMEDS enrichment as a pipeline stage.
+suMEDS registers the `sumeds_enrich` stage (in the `MEDS_transforms.stages`
+entry-point group), and a dataset's MESSY spec declares it after the canonical
+pipeline:
+
+```yaml
+etl:
+  dataset_name: eICU
+  post_stages:
+    - sumeds_enrich:
+        rules: eICU # a registered name or a path; default: the dataset name
+```
+
+An ETL that declares the stage needs only `meds-extract-run`, with suMEDS
+installed beside MEDS-Extract. It needs no custom runner and no
+`suMEDS-extract`:
+
+```bash
+meds-extract-run spec=eICU output_dir=/data/eicu_meds do_download=false input_dir=/data/eicu
+meds-extract-run spec=eICU output_dir=/data/eicu_meds skip_stages=[sumeds_enrich]  # without enrichment
+```
+
+After the canonical pipeline, the stage enriches the finished
+`metadata/codes.parquet` in place and records the enrichment in
+`metadata/dataset.json` (see
+[Recorded in dataset.json](enrichment.md#recorded-in-datasetjson)). Its options
+are the `suMEDS-enrich` options, spelled with underscores:
+
+| Option | Meaning |
+|---|---|
+| `rules` | Registered rules name or rules file. Default: the rules registered under the dataset name, unless an Athena source is set |
+| `athena_csv`, `athena_postgres` | Athena download, as `--athena-csv` and `--athena-postgres` |
+| `ontology_source`, `ontology_ref`, `offline`, `packs`, `loinc_hierarchy` | Ontology pack options, as for `suMEDS-enrich` |
+| `parent_codes`, `child_codes`, `sibling_codes`, `child_depth`, `exclude_self_parent_code` | Hierarchy options, as for `suMEDS-enrich` |
+| `verbose` | Print the coverage and rule report to the pipeline log (default: enabled) |
+| `strict` | Fail the run if enrichment fails (default: `false`) |
+
+Unset options keep the `suMEDS-enrich` defaults. A spec that sets an option the
+stage does not declare is rejected before the pipeline starts.
+
+The stage soft-fails like `suMEDS-extract` (below). If enrichment fails,
+`codes.parquet` stays as MEDS-Extract wrote it, `dataset.json` records
+`"enriched": false`, and the run succeeds. The warning, with the command that
+finishes the enrichment, is in `OUTPUT_DIR/.logs/pipeline.log`. That command is
+`suMEDS-enrich OUTPUT_DIR` (see
+[Enrich a MEDS dataset later](#enrich-a-meds-dataset-later)). MEDS-Extract
+marks the stage done either way, so a later `meds-extract-run` does not try
+again. To run the stage itself again, delete `OUTPUT_DIR/.logs/sumeds_enrich.done`
+and run the same command; enriching the enriched cohort again gives the same
+`codes.parquet`. With `strict: true`, a failed enrichment fails the run instead.
+
+## Run an ETL and enrich it with suMEDS-extract
+
+For a spec that does not declare the stage, or for MEDS-Extract before 0.8.1,
 `suMEDS-extract` runs a [MEDS-Extract](https://github.com/mmcdermott/MEDS_extract)
-ETL and then enriches the finished `metadata/codes.parquet` in place:
+ETL and then enriches the finished `metadata/codes.parquet` in place. It works
+as before: ETLs that declare the `sumeds_enrich` stage need only
+`meds-extract-run`, and running `suMEDS-extract` on such a spec enriches twice,
+with the same result.
 
 ```bash
 suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
@@ -186,6 +244,44 @@ over and enrich from that directory:
 ```bash
 suMEDS-enrich /data/mc_med_meds --ontology-source /media/sumeds-ontologies/ontologies
 ```
+
+## Clusters without internet access on compute nodes
+
+On an HPC cluster whose login nodes have internet access but whose compute
+nodes do not, fill a cache on shared storage once, from a login node:
+
+```bash
+export XDG_CACHE_HOME=/shared/project/cache
+suMEDS-enrich --prefetch --rules eICU
+```
+
+`--prefetch` downloads every pack, hierarchy and crosswalk table of the pinned
+ontology release (or of `--ontology-source` and `--ontology-ref`) into
+`$XDG_CACHE_HOME/sumeds/ontologies/`, verifies each file against its checksum,
+and prints where it put them. The release is a few tens of megabytes. Files
+already cached are kept, so running it again downloads nothing new. With
+`--rules`, it also checks that the release has every pack and crosswalk table
+the rules use.
+
+Then run on the compute nodes with the same `XDG_CACHE_HOME` and `offline`, so
+nothing tries the network:
+
+```yaml
+etl:
+  post_stages:
+    - sumeds_enrich:
+        rules: eICU
+        offline: true
+```
+
+or `suMEDS-enrich ... --offline`, and `suMEDS-extract ... -- --offline`.
+`suMEDS-enrich --prefetch --offline` checks that the cache is complete without
+downloading anything. The pinned release makes no request once its files are
+cached, even without `offline`. With `offline`, a missing file fails at once,
+and the stage soft-fails instead of waiting on a network timeout. The cache
+directory for a source is itself a complete pack directory, so it can also be
+copied elsewhere and passed as `--ontology-source DIR`. The record then names
+the source `local`.
 
 ## Output formats
 

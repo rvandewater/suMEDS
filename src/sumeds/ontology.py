@@ -297,7 +297,14 @@ def load_rules(source: str | Path | Mapping[str, Any]) -> OntologyRules:
             path = Path(source).expanduser()
             name = path.name
         if not path.is_file():
-            raise FileNotFoundError(f"rules file not found: {path}")
+            hint = ""
+            if len(Path(str(source)).parts) == 1:
+                available = ", ".join(sorted(registered_rules())) or "none"
+                hint = (
+                    f", and no installed package registers rules under {str(source)!r} "
+                    f"(registered: {available})"
+                )
+            raise FileNotFoundError(f"rules file not found: {path}{hint}")
         data = path.read_bytes()
         raw = yaml.safe_load(data.decode("utf-8")) or {}
         where = str(path)
@@ -727,22 +734,7 @@ class OntologyPacks:
         """Return the verified rows of crosswalk ``table`` (``<dataset>/<name>``)."""
 
         dataset, _, name = table.partition("/")
-        if dataset not in self._crosswalks:
-            entry = self._load_index().get("crosswalks", {}).get(dataset)
-            relative = f"crosswalks/{dataset}/manifest.json"
-            if not isinstance(entry, dict) or entry.get("manifest") != relative:
-                raise OntologyPackError(
-                    f"no crosswalk dataset {dataset!r} at {self.source}"
-                )
-            manifest = _json(self._get_manifest(relative, entry), relative)
-            if manifest.get("schema") != CROSSWALK_SCHEMA or not isinstance(
-                manifest.get("tables"), dict
-            ):
-                raise OntologyPackError(
-                    f"{relative} is not a {CROSSWALK_SCHEMA} manifest"
-                )
-            self._crosswalks[dataset] = manifest
-        info = self._crosswalks[dataset]["tables"].get(name)
+        info = self._crosswalk_manifest(dataset)["tables"].get(name)
         if not isinstance(info, dict) or not _SAFE_NAME.match(
             str(info.get("file", ""))
         ):
@@ -758,6 +750,70 @@ class OntologyPacks:
         stats["shards"] = 1
         stats["bytes"] += len(data) if stats["downloaded"] > before else 0
         return list(_csv_reader(data, info["file"]))
+
+    def prefetch(self) -> dict[str, int]:
+        """Fetch every file of the source into the cache, for later ``offline`` runs.
+
+        That is the index, every pack (its manifest, shards and hierarchy table) and
+        every crosswalk table, each verified against its checksum. Files already
+        cached are kept; a local source is only verified. Returns the number of shard,
+        hierarchy and crosswalk table ``files`` (besides the index and manifests) and how
+        many were ``downloaded``, with their ``bytes``.
+        """
+
+        index = self._load_index()
+        files: list[tuple[str, str | None]] = []
+        for vocabulary in sorted(index["vocabularies"]):
+            directory, manifest = self._manifest(vocabulary)
+            files += [
+                (f"{directory}/{shard['file']}", shard.get("sha256"))
+                for shard in manifest["shards"].values()
+            ]
+            hierarchy = manifest.get("hierarchy")
+            if hierarchy is not None:
+                files += [
+                    (
+                        f"{directory}/{hierarchy['directory']}/{shard['file']}",
+                        shard.get("sha256"),
+                    )
+                    for shard in hierarchy["shards"].values()
+                ]
+        for dataset in sorted(index.get("crosswalks", {})):
+            for info in self._crosswalk_manifest(dataset)["tables"].values():
+                if not isinstance(info, dict) or not _SAFE_NAME.match(
+                    str(info.get("file", ""))
+                ):
+                    raise OntologyPackError(
+                        f"unsafe crosswalk table in crosswalks/{dataset}/manifest.json"
+                    )
+                files.append(
+                    (f"crosswalks/{dataset}/{info['file']}", info.get("sha256"))
+                )
+        totals = {"files": 0, "downloaded": 0, "bytes": 0}
+        for relative, sha256 in files:
+            before = totals["downloaded"]
+            data = self._get(relative, sha256, stats=totals)
+            totals["files"] += 1
+            totals["bytes"] += len(data) if totals["downloaded"] > before else 0
+        return totals
+
+    def _crosswalk_manifest(self, dataset: str) -> dict[str, Any]:
+        if dataset not in self._crosswalks:
+            entry = self._load_index().get("crosswalks", {}).get(dataset)
+            relative = f"crosswalks/{dataset}/manifest.json"
+            if not isinstance(entry, dict) or entry.get("manifest") != relative:
+                raise OntologyPackError(
+                    f"no crosswalk dataset {dataset!r} at {self.source}"
+                )
+            manifest = _json(self._get_manifest(relative, entry), relative)
+            if manifest.get("schema") != CROSSWALK_SCHEMA or not isinstance(
+                manifest.get("tables"), dict
+            ):
+                raise OntologyPackError(
+                    f"{relative} is not a {CROSSWALK_SCHEMA} manifest"
+                )
+            self._crosswalks[dataset] = manifest
+        return self._crosswalks[dataset]
 
     def _hierarchy(
         self, vocabulary: str, codes: set[str]

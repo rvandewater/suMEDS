@@ -29,12 +29,34 @@ from .ontology import (
     DATA_REPOSITORY,
     DEFAULT_REF,
     SOURCE_ENV,
+    CrosswalkRule,
+    OntologyPacks,
+    load_rules,
     registered_rules,
     registered_rules_path,
 )
 from .summary import summarize
 
 ENRICH_PROG = "suMEDS-enrich"
+#: Options of the ``sumeds_enrich`` MEDS-Extract stage: the ``suMEDS-enrich`` options, with
+#: underscores, by type, plus ``strict``. :func:`stage_argv` turns them into arguments.
+STAGE_OPTIONS: dict[str, type] = {
+    "rules": str,
+    "athena_csv": str,
+    "athena_postgres": str,
+    "ontology_source": str,
+    "ontology_ref": str,
+    "offline": bool,
+    "packs": bool,
+    "loinc_hierarchy": bool,
+    "parent_codes": bool,
+    "child_codes": bool,
+    "sibling_codes": bool,
+    "child_depth": int,
+    "exclude_self_parent_code": bool,
+    "verbose": bool,
+    "strict": bool,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,6 +182,7 @@ def build_enrich_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "input",
         type=Path,
+        nargs="?",
         help="metadata or summary table, or a MEDS dataset root",
     )
     parser.add_argument(
@@ -199,6 +222,14 @@ def build_enrich_parser() -> argparse.ArgumentParser:
         help="exit with an error if enrichment fails (the default here; "
         "suMEDS-extract soft-fails unless given this)",
     )
+    parser.add_argument(
+        "--prefetch",
+        action="store_true",
+        help="instead of enriching, download every pack, hierarchy and crosswalk table "
+        "of the ontology source (--ontology-source, --ontology-ref) into the cache, for "
+        "later --offline runs on machines without internet access; with --rules, also "
+        "check that the source has everything the rules use",
+    )
     parser.add_argument("--version", action="version", version=version("suMEDS"))
     return parser
 
@@ -213,6 +244,10 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
 
     parser = build_enrich_parser()
     args = parser.parse_args(argv)
+    if args.prefetch:
+        return _prefetch(parser, args)
+    if args.input is None:
+        parser.error("the following arguments are required: input")
     hint = ""
     if args.input.is_dir():
         if args.output is not None:
@@ -254,6 +289,87 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
         return 0
     print(f"Wrote {output}")
     return 0
+
+
+def _prefetch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """Fill the pack cache with the whole ontology source; check the rules against it."""
+
+    if args.input is not None or args.output is not None:
+        parser.error(
+            "--prefetch takes no table, dataset root or -o; it only fills the cache"
+        )
+    if args.athena_csv is not None or args.athena_postgres is not None:
+        parser.error("--prefetch fetches ontology packs only; Athena needs no prefetch")
+    try:
+        packs = OntologyPacks(
+            args.ontology_source,
+            args.ontology_ref or DEFAULT_REF,
+            offline=bool(args.offline),
+        )
+        totals = packs.prefetch()
+        if args.rules is not None:
+            available = set(packs.vocabularies())
+            for rule in load_rules(args.rules).vocabulary_rules:
+                if isinstance(rule, CrosswalkRule):
+                    # Cached by now; raises if the source has no such table.
+                    packs.crosswalk(rule.table)
+                if rule.validate == "pack" and rule.vocabulary not in available:
+                    raise ValueError(
+                        f"rule {rule.id!r} validates against the {rule.vocabulary} pack, "
+                        f"which {packs.describe()} does not have"
+                    )
+    except Exception as exc:
+        parser.exit(1, f"{ENRICH_PROG}: error: {exc}\n")
+    if packs.local is not None:
+        print(
+            f"Checked {totals['files']:,} pack, hierarchy and crosswalk files of the "
+            f"local source {packs.local}; a local source needs no cache"
+        )
+    else:
+        print(
+            f"Prefetched {packs.describe()}: {totals['files']:,} pack, hierarchy and "
+            f"crosswalk files, {totals['downloaded']:,} downloaded "
+            f"({totals['bytes']:,} bytes), cached in {packs.cache}"
+        )
+    return 0
+
+
+def stage_argv(
+    input_path: str | Path, output_path: str | Path, options: dict[str, Any]
+) -> list[str]:
+    """``suMEDS-enrich`` arguments for the ``sumeds_enrich`` stage's ``options``.
+
+    Each option is a :data:`STAGE_OPTIONS` name; ``None`` leaves it at its default. A
+    boolean ``x_y`` becomes ``--x-y`` or ``--no-x-y``. ``strict`` (default false) chooses
+    ``--strict`` over ``--soft-fail``.
+    """
+
+    argv = [str(input_path), "-o", str(output_path)]
+    for name, kind in STAGE_OPTIONS.items():
+        value = options.get(name)
+        flag = "--" + name.replace("_", "-")
+        if name == "strict":
+            value = False if value is None else value
+        if value is None:
+            continue
+        if kind is bool:
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"option {name!r} must be true or false, got {value!r}"
+                )
+            if name == "strict":
+                argv.append("--strict" if value else "--soft-fail")
+            else:
+                argv.append(flag if value else "--no-" + flag[2:])
+        elif kind is int:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"option {name!r} must be an integer, got {value!r}")
+            argv += [flag, str(value)]
+        else:
+            if not isinstance(value, (str, Path)) or not str(value).strip():
+                raise ValueError(f"option {name!r} must be a non-empty string")
+            argv += [flag, str(value)]
+    return argv
 
 
 def _apply_record(args: argparse.Namespace, codes: Path) -> bool:
@@ -340,8 +456,8 @@ def _soft_fail(args: argparse.Namespace, error: Exception) -> None:
         for form in (str(value), str(path), str(path.resolve())):
             redact[form] = placeholder
 
-    if needs and needs[0][0] == "--rules":
-        hide(args.rules, "<RULES_FILE>")
+    if needs and needs[0][0] == "--rules" and len(args.rules.parts) > 1:
+        hide(args.rules, "<RULES_FILE>")  # a bare name is no path
     if args.athena_csv is not None:
         hide(args.athena_csv, "<ATHENA_DIR>")
     if args.athena_postgres is not None:

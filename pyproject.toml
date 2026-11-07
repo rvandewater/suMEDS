@@ -33,6 +33,10 @@ suMEDS = "sumeds.cli:main"
 suMEDS-enrich = "sumeds.cli:enrich_main"
 suMEDS-extract = "sumeds.extract:main"
 
+# The sumeds_enrich post-stage, for MEDS-Extract specs (MEDS-Extract >= 0.8.1).
+[project.entry-points."MEDS_transforms.stages"]
+sumeds_enrich = "sumeds.stage:main"
+
 [build-system]
 requires = ["uv_build>=0.11.15,<0.12.0"]
 build-backend = "uv_build"

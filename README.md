@@ -137,9 +137,23 @@ uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet --rules ru
 ```
 
 An ETL package can register its rules file under its MEDS-Extract spec name
-(entry-point group `sumeds.rules`), so `--rules MC-MED` finds it. Then one
-command runs the ETL and enriches its metadata in place, with options for
-`suMEDS-enrich` after a `--`:
+(entry-point group `sumeds.rules`), so `--rules MC-MED` finds it. With
+MEDS-Extract 0.8.1 or later, its spec can declare the `sumeds_enrich` stage,
+and then `meds-extract-run` alone runs the ETL and enriches its metadata in
+place:
+
+```yaml
+etl:
+  post_stages:
+    - sumeds_enrich: {rules: MC-MED}
+```
+
+```bash
+meds-extract-run spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
+```
+
+For other specs, `suMEDS-extract` runs the ETL and the enrichment in one
+command, with options for `suMEDS-enrich` after a `--`:
 
 ```bash
 suMEDS-extract spec=MC-MED output_dir=/data/mc_med_meds do_download=false input_dir=/data/mc-med
@@ -153,15 +167,16 @@ does not fail the ETL: `codes.parquet` is left as it was, the failure is
 recorded, and `suMEDS-enrich /data/mc_med_meds` enriches it later with the
 recorded rules and options. See
 [Registering rules in a package](docs/rules.md#registering-rules-in-a-package),
-[Run an ETL and enrich it](docs/usage.md#run-an-etl-and-enrich-it), and
+[Enrich inside a MEDS-Extract ETL](docs/usage.md#enrich-inside-a-meds-extract-etl), and
 [Recorded in dataset.json](docs/enrichment.md#recorded-in-datasetjson).
 
 Codes are validated against ontology packs kept in a separately versioned
 data repository, [`sumeds-ontologies`](https://github.com/rvandewater/sumeds-ontologies). suMEDS fetches them shard by shard
 on demand from a pinned release tag (default `v0.2.0`, with the sha256 of its
-index pinned in suMEDS), verifies every file, and caches it; `--offline` and
-`--ontology-source` (a mirror, or packs you rebuilt yourself from the official
-sources) are supported. Release `v0.2.0` holds ICD-10-CM and ICD-10-PCS (FY2016
+index pinned in suMEDS), verifies every file, and caches it; `--offline`,
+`--prefetch` (fill the cache on a machine with internet access for compute
+nodes without it) and `--ontology-source` (a mirror, or packs you rebuilt
+yourself from the official sources) are supported. Release `v0.2.0` holds ICD-10-CM and ICD-10-PCS (FY2016
 to FY2027), ICD-9-CM and ICD-9 procedures (v32), which CDC/NCHS and CMS publish
 without a license agreement (ICD-10-CM and ICD-9-CM adapt WHO classifications,
 and WHO keeps the copyright in content taken from them), and LOINC 2.83 with
