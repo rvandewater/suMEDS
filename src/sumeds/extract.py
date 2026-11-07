@@ -7,6 +7,9 @@
    the ``--``. Without ``--rules``, it uses the rules file a package registered under the spec's
    name (the ``sumeds.rules`` entry-point group; see :func:`sumeds.registered_rules`).
 
+A spec for MEDS-Extract 0.8.1 or later can instead declare the ``sumeds_enrich`` post-stage (see
+:mod:`sumeds.stage`); then ``meds-extract-run`` alone enriches, and this command is not needed.
+
 suMEDS does not import MEDS-Extract: it runs the ``meds-extract-run`` found on ``PATH``, which is
 the one installed alongside it. The arguments and rules are checked before the pipeline starts,
 and the pipeline's exit code is returned if it fails, in which case nothing is enriched.

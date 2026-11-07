@@ -387,9 +387,9 @@ atomically, only once the enriched table is complete.
 When the enriched table is a MEDS dataset's `metadata/codes.parquet`, that is,
 a `codes.parquet` with a `dataset.json` beside it, suMEDS records the
 enrichment in that `dataset.json` under the top-level key `sumeds_enrichment`.
-This covers `suMEDS-extract`, `suMEDS-enrich` with `-o` set to the dataset's
-own `metadata/codes.parquet` (or another dataset's), and `enrich_file` in
-Python. For example:
+This covers the `sumeds_enrich` MEDS-Extract stage, `suMEDS-extract`,
+`suMEDS-enrich` with a dataset root or with `-o` set to a dataset's
+`metadata/codes.parquet`, and `enrich_file` in Python. For example:
 
 ```json
 {
@@ -426,7 +426,8 @@ Python. For example:
 | `enriched_at` | UTC time of the enrichment, ISO 8601 |
 | `coverage` | Rows of `codes.parquet` (`codes`), and rows with a `description` and with `parent_codes`, as `[before, after]` |
 
-An enrichment that fails inside an ETL (`suMEDS-extract`, or `--soft-fail`)
+An enrichment that fails inside an ETL (the `sumeds_enrich` stage,
+`suMEDS-extract`, or `--soft-fail`)
 leaves `codes.parquet` as it was and records `"enriched": false` with the
 same fields up to `options`, then `attempted_at`, a one-line `error`, and the
 `retry` command, for example

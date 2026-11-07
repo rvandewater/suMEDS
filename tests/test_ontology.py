@@ -1436,3 +1436,113 @@ def test_loinc_hierarchy_needs_rules_and_packs(
             ]
         )
     assert "loinc_hierarchy needs" in capsys.readouterr().err
+
+
+def test_prefetch_fills_the_cache_for_offline_runs(
+    packs: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from sumeds import ontology
+
+    remote = _FakeRemote(packs)
+    monkeypatch.setattr("sumeds.ontology.urllib.request.urlopen", remote)
+    monkeypatch.setattr(
+        ontology, "DEFAULT_INDEX_SHA256", _sha((packs / "index.json").read_bytes())
+    )
+
+    def requested() -> list[str]:
+        paths = sorted(url.split("/ontologies/", 1)[1] for url in remote.requests)
+        remote.requests.clear()
+        return paths
+
+    # On a machine with internet access: every file of the release, once.
+    assert enrich_main(["--prefetch"]) == 0
+    everything = sorted(
+        path.relative_to(packs).as_posix()
+        for path in packs.rglob("*")
+        if path.is_file()
+    )
+    assert requested() == everything
+    out = capsys.readouterr().out
+    assert (
+        f"Prefetched rvandewater/sumeds-ontologies@v0.2.0, index sha256 pinned: "
+        f"{len(everything) - 5} pack, hierarchy and crosswalk files, "
+        f"{len(everything) - 5} downloaded"
+    ) in out  # besides the index and the four manifests
+
+    # Offline, every vocabulary, the LOINC hierarchy and the crosswalks are served from
+    # the cache without a single request.
+    frame = pl.DataFrame(
+        {
+            "code": [
+                "DIAGNOSIS//ICD//10//I5023",
+                "ICD10_PCS//0DTJ4ZZ",
+                "LAB//100//mg/dL",
+                "OTHER//LOINC//8867-4",
+            ],
+            "parent_codes": [None, None, None, ["LOINC/8867-4"]],
+        }
+    )
+    rules = {**ICD_RULES, "crosswalk": LAB_RULES["crosswalk"]}
+    config = EnrichmentConfig(rules=rules, offline=True, loinc_hierarchy=True)
+    rows = {
+        row["code"]: row
+        for row in enrich_metadata(frame.lazy(), config).collect().to_dicts()
+    }
+    assert rows["DIAGNOSIS//ICD//10//I5023"]["concept_code"] == "I50.23"
+    assert rows["ICD10_PCS//0DTJ4ZZ"]["vocabulary_id"] == "ICD10PCS"
+    assert "LOINC//LP1-1" in rows["LAB//100//mg/dL"]["parent_codes"]
+    assert rows["OTHER//LOINC//8867-4"]["description"] == "Heart rate"
+    assert requested() == []
+
+    # Prefetching again downloads nothing, and the pinned release needs no request.
+    assert enrich_main(["--prefetch"]) == 0
+    assert requested() == []
+    assert ", 0 downloaded (0 bytes)" in capsys.readouterr().out
+    # --offline only checks that the cache is complete.
+    assert enrich_main(["--prefetch", "--offline"]) == 0
+
+
+def test_prefetch_checks_the_rules_and_its_arguments(
+    packs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "schema: sumeds-rules/0.1\n"
+        "ontology:\n"
+        "  - {id: snomed, pattern: '^SNOMED//(?P<code>.+)$', vocabulary: SNOMED}\n"
+    )
+    # A local source is only checked.
+    argv = ["--prefetch", "--ontology-source", str(packs)]
+    assert enrich_main(argv) == 0
+    assert "a local source needs no cache" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        enrich_main([*argv, "--rules", str(rules)])
+    assert exc.value.code == 1
+    assert "validates against the SNOMED pack" in capsys.readouterr().err
+
+    rules.write_text(
+        "schema: sumeds-rules/0.1\n"
+        "crosswalk:\n"
+        "  - {id: x, pattern: '^X//(?P<key>.+)$', table: demo/missing,"
+        " key_column: k, code_column: c, vocabulary: LOINC}\n"
+    )
+    with pytest.raises(SystemExit) as exc:
+        enrich_main([*argv, "--rules", str(rules)])
+    assert "no crosswalk table 'demo/missing'" in capsys.readouterr().err
+
+    for extra, message in [
+        (["codes.parquet"], "--prefetch takes no table"),
+        (["--athena-csv", str(tmp_path)], "Athena needs no prefetch"),
+        ([], None),
+    ]:
+        if message is None:
+            with pytest.raises(SystemExit) as exc:
+                enrich_main(["--rules", str(rules)])  # neither --prefetch nor input
+            assert "the following arguments are required: input" in (
+                capsys.readouterr().err
+            )
+            continue
+        with pytest.raises(SystemExit) as exc:
+            enrich_main([*argv, *extra])
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err

@@ -139,8 +139,11 @@ returns a `PackEntry`
 `ancestor_names`, `child_names`, `sibling_names`) for each code present in the
 pack, fetching only the shards it needs; `hierarchy=True` adds the ancestors of
 a pack's separate hierarchy (LOINC Parts); `crosswalk("dataset/name")` returns the
-verified rows of a crosswalk table; `stats` counts shards used and downloaded.
-Integrity and fetch errors raise `OntologyPackError`.
+verified rows of a crosswalk table; `prefetch()` fetches every pack, hierarchy
+and crosswalk table of the source into the cache (what `suMEDS-enrich
+--prefetch` runs) and returns the counts of files, downloads and bytes; `stats`
+counts shards used and downloaded. Integrity and fetch errors raise
+`OntologyPackError`.
 
 ### `enrich_file`
 

@@ -82,8 +82,10 @@ is registered under:
 ```
 
 Once the package is installed, `--rules MC-MED`, `enrichment.rules: MC-MED` and
-`load_rules("MC-MED")` load that file, and `suMEDS-extract spec=MC-MED ...`
-uses it without a `--rules` (see [Usage](usage.md#run-an-etl-and-enrich-it)).
+`load_rules("MC-MED")` load that file. The `sumeds_enrich` stage of a spec
+whose dataset name is `MC-MED`, and `suMEDS-extract spec=MC-MED ...`, use it
+without a `rules` option (see
+[Enrich inside a MEDS-Extract ETL](usage.md#enrich-inside-a-meds-extract-etl)).
 A registered name takes precedence over a path of the same spelling, as for
 MEDS-Extract specs. `sumeds.registered_rules()` lists the registered names.
 
@@ -253,7 +255,9 @@ all cached makes no network request. For other sources, the index is refreshed
 on each online run, and manifests, shards and tables are reused while their
 checksum matches the index or manifest that lists them. `--offline`
 (`enrichment.offline: true`) uses only the cache or a local source, and fails
-with a clear message if a needed file is missing.
+with a clear message if a needed file is missing. `suMEDS-enrich --prefetch`
+fills the cache with the whole release ahead of offline runs (see
+[Clusters without internet access](usage.md#clusters-without-internet-access-on-compute-nodes)).
 
 ```bash
 uv run suMEDS-enrich metadata/codes.parquet -o codes-enriched.parquet \
