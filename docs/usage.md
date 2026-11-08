@@ -13,11 +13,11 @@ MEDS_ROOT/
 
 Every event shard is validated against the official MEDS `DataSchema` from its
 Parquet footer. Code and split metadata use `CodeMetadataSchema` and
-`SubjectSplitSchema`. The tool rejects duplicate metadata keys, missing declared
-code modifiers, and incomplete split mappings. Event codes absent from metadata
-are retained with null descriptive fields, which supports older datasets while
-making the metadata gap visible. It does not run expensive whole-dataset
-conformance checks such as event order.
+`SubjectSplitSchema`. The tool rejects event shards without the declared code
+modifiers, duplicate code metadata keys, and incomplete split mappings. Event
+codes absent from metadata are retained with null descriptive fields, which
+supports older datasets while making the metadata gap visible. It does not run
+expensive whole-dataset conformance checks such as event order.
 
 ## CLI
 
@@ -307,6 +307,7 @@ Parquet when exact nested types matter.
 |---|---|---|
 | `split` | string | Present only for per-split output |
 | `code` | string | MEDS code or the configured rare sentinel |
+| declared code modifiers | string, nullable | Modifier values of the counted events; null for masked rows. Those that `codes.parquet` lacks follow its key columns |
 | `description` | string, nullable | Canonical description; null for masked rows |
 | `parent_codes` | list[string], nullable | Existing values plus valid Athena or pack ancestors through root by default, then same-table parents from hierarchy rules |
 | `child_codes` | list[string], nullable | Existing values plus optional Athena or pack descendants |
@@ -329,3 +330,29 @@ Parquet when exact nested types matter.
 
 Code modifier columns declared by `metadata/dataset.json` are part of the
 counting key. This prevents distinct modified concepts from being merged.
+
+### Code modifiers and code metadata
+
+MEDS allows `metadata/codes.parquet` to be keyed by `code` alone, or by `code`
+plus code modifiers. MEDS-Extract (0.8.1 or later) writes it keyed by `code`
+alone, even when `dataset.json` declares modifiers such as MIMIC-IV's `unit`.
+suMEDS therefore uses different keys for counting and for metadata:
+
+- **Counting** and privacy suppression use `code` plus every declared modifier.
+  Each `code` + modifiers combination is its own row, with its own counts, and
+  is released or masked on its own.
+- **Code metadata** is joined on `code` plus the declared modifiers that
+  `codes.parquet` has. When it has none of them, its row for a code applies to
+  every modifier variant of that code; when it has some, its row applies to
+  every variant of the modifiers it lacks. The rows of `codes.parquet` that
+  match a released row must be unique on these keys, or the summary fails.
+
+Modifier values always come from the event counts, so every released row carries
+its own, whichever modifiers `codes.parquet` has. A column of `codes.parquet`
+that `dataset.json` does not declare as a modifier is an ordinary metadata
+column, not a key.
+
+For example, with `"code_modifier_columns": ["unit"]` and a `codes.parquet` that
+has one row for `GLUCOSE` and no `unit` column, the summary has a row for each
+released unit of `GLUCOSE` (say `mg/dL` and `mmol/L`), each with its own counts
+and both with that row's description and parent codes.

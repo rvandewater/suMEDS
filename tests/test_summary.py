@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 import meds
@@ -306,3 +308,192 @@ def test_rare_label_rejects_released_code_without_metadata(
             tmp_path / "summary.parquet",
             SummaryConfig(min_subjects=3, rare_code_label="A"),
         )
+
+
+# Events with two declared modifiers. ``A`` has three modifier variants; the
+# variants (A, main, g) and (C, z, null) have one subject each and are masked.
+_MODIFIER_EVENTS = [
+    (1, "A", "main", "mg"),
+    (2, "A", "main", "mg"),
+    (3, "A", "main", "g"),
+    (1, "A", "alt", "mg"),
+    (2, "A", "alt", "mg"),
+    (1, "B", "x", None),
+    (2, "B", "x", None),
+    (2, "C", "z", None),
+]
+# Code metadata keyed by no, some, and all of the declared modifiers.
+_MODIFIER_METADATA = {
+    "none": [
+        {"code": "A", "description": "A"},
+        {"code": "B", "description": "B"},
+        {"code": "C", "description": "C"},
+    ],
+    "subset": [
+        {"code": "A", "modifier": "main", "description": "A main"},
+        {"code": "A", "modifier": "alt", "description": "A alt"},
+        {"code": "B", "modifier": "x", "description": "B x"},
+        {"code": "C", "modifier": "z", "description": "C z"},
+    ],
+    "all": [
+        {"code": "A", "modifier": "main", "unit": "mg", "description": "A main mg"},
+        {"code": "A", "modifier": "main", "unit": "g", "description": "A main g"},
+        {"code": "A", "modifier": "alt", "unit": "mg", "description": "A alt mg"},
+        {"code": "B", "modifier": "x", "unit": None, "description": "B x"},
+        {"code": "C", "modifier": "z", "unit": None, "description": "C z"},
+    ],
+}
+
+
+def _write_modifier_dataset(
+    root: Path, metadata: list[dict], modifiers: list[str]
+) -> None:
+    """Rewrite the fixture with ``_MODIFIER_EVENTS``, ``metadata`` and ``modifiers``."""
+
+    event_schema = pa.schema(
+        [
+            pa.field("subject_id", pa.int64(), nullable=False),
+            pa.field("time", pa.timestamp("us")),
+            pa.field("code", pa.string(), nullable=False),
+            pa.field("modifier", pa.string()),
+            pa.field("unit", pa.string()),
+        ]
+    )
+    for path in (root / "data").glob("*.parquet"):
+        path.unlink()
+    for index, rows in enumerate((_MODIFIER_EVENTS[:4], _MODIFIER_EVENTS[4:])):
+        pq.write_table(
+            pa.Table.from_pylist(
+                [
+                    {
+                        "subject_id": subject,
+                        "time": datetime(2020, 1, 1),
+                        "code": code,
+                        "modifier": modifier,
+                        "unit": unit,
+                    }
+                    for subject, code, modifier, unit in rows
+                ],
+                schema=event_schema,
+            ),
+            root / "data" / f"{index}.parquet",
+        )
+    names = list(metadata[0])
+    code_schema = pa.schema(
+        [
+            pa.field(name, pa.string(), nullable=name != "code")
+            for name in names
+            if name != "description"
+        ]
+        + [
+            pa.field("description", pa.string()),
+            pa.field("parent_codes", pa.list_(pa.string())),
+        ]
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [{**row, "parent_codes": [f"P/{row['code']}"]} for row in metadata],
+            schema=code_schema,
+        ),
+        root / "metadata" / "codes.parquet",
+    )
+    dataset = json.loads((root / "metadata" / "dataset.json").read_text())
+    dataset["code_modifier_columns"] = modifiers
+    (root / "metadata" / "dataset.json").write_text(json.dumps(dataset))
+
+
+@pytest.mark.parametrize(
+    ("keys", "descriptions"),
+    [
+        # One metadata row applies to every modifier variant of its code.
+        ("none", ("A", "A", "B")),
+        # Only the modifier the metadata has distinguishes metadata rows.
+        ("subset", ("A alt", "A main", "B x")),
+        # Keyed by all modifiers, as before: each variant has its own row.
+        ("all", ("A alt mg", "A main mg", "B x")),
+    ],
+)
+def test_code_metadata_keyed_by_any_declared_modifiers(
+    meds_dataset: Path, tmp_path: Path, keys: str, descriptions: tuple[str, ...]
+) -> None:
+    _write_modifier_dataset(
+        meds_dataset, _MODIFIER_METADATA[keys], ["modifier", "unit"]
+    )
+
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+    )
+    result = pl.read_parquet(output)
+
+    # The output schema does not depend on the metadata keys.
+    assert result.columns == [
+        "code",
+        "modifier",
+        "unit",
+        "description",
+        "parent_codes",
+        "event_count",
+        "subject_count",
+        "is_masked",
+    ]
+    assert result.schema["modifier"] == result.schema["unit"] == pl.String
+    # Modifier values come from the counts, which keep every modifier: a released
+    # variant is never merged with another, nor with a masked one.
+    assert result.select(
+        "code", "modifier", "unit", "event_count", "subject_count", "is_masked"
+    ).rows() == [
+        ("A", "alt", "mg", 2, 2, False),
+        ("A", "main", "mg", 2, 2, False),
+        ("B", "x", None, 2, 2, False),
+        # (A, main, g) and (C, z, null): subjects {3} and {2}.
+        ("__RARE__", None, None, 2, 2, True),
+    ]
+    assert tuple(result["description"].head(3)) == descriptions
+    assert result["parent_codes"].to_list() == [["P/A"], ["P/A"], ["P/B"], None]
+
+    csv = pl.read_csv(
+        summarize(meds_dataset, tmp_path / "summary.csv", SummaryConfig(min_subjects=2))
+    )
+    assert csv.columns == result.columns
+    assert csv["unit"].to_list() == ["mg", "mg", None, None]
+
+
+@pytest.mark.parametrize(
+    ("keys", "message"),
+    [("none", r"\['code'\]"), ("subset", r"\['code', 'modifier'\]")],
+)
+def test_code_metadata_keys_must_be_unique(
+    meds_dataset: Path, tmp_path: Path, keys: str, message: str
+) -> None:
+    metadata = _MODIFIER_METADATA[keys]
+    _write_modifier_dataset(
+        meds_dataset,
+        [*metadata, {**metadata[0], "description": "Again"}],
+        ["modifier", "unit"],
+    )
+
+    with pytest.raises(ValueError, match=f"keys are not unique: {message}"):
+        summarize(
+            meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+        )
+
+
+def test_undeclared_metadata_modifier_is_an_ordinary_column(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    # ``unit`` is in the events and the metadata, but not declared.
+    metadata = [{**row, "unit": "label"} for row in _MODIFIER_METADATA["subset"]]
+    _write_modifier_dataset(meds_dataset, metadata, ["modifier"])
+
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+    )
+    result = pl.read_parquet(output)
+
+    assert result.columns[:4] == ["code", "modifier", "unit", "description"]
+    # Counted by code and modifier only; C (one subject) is dropped.
+    assert result.select("code", "modifier", "unit", "subject_count").rows() == [
+        ("A", "alt", "label", 2),
+        ("A", "main", "label", 3),
+        ("B", "x", "label", 2),
+    ]

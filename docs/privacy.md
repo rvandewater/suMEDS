@@ -10,6 +10,10 @@ For each output scope, codes below `min_subjects` unique subjects are either:
 - omitted (`drop`), or
 - combined into one row (`bucket`).
 
+With declared code modifiers, each `code` + modifiers combination is counted and
+suppressed on its own, whichever modifiers `metadata/codes.parquet` is keyed by
+(see [Code modifiers and code metadata](usage.md#code-modifiers-and-code-metadata)).
+
 A masked row contains no code description, parent relationships, modifier
 values, or metadata extensions. Optional Athena and ontology-rule lookup runs
 after masking, so source codes represented by a rare bucket are never sent to
