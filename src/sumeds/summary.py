@@ -226,8 +226,12 @@ def summarize(
         if config.per_split:
             scope.append("split")
 
-    base_keys = ["code", *modifiers]
-    count_keys = [*scope, *base_keys]
+    count_keys = [*scope, "code", *modifiers]
+    # MEDS code metadata is keyed by code, plus any declared modifiers it has
+    # (MEDS-Extract writes code alone); its row applies to every variant of the rest.
+    metadata_schema = metadata.collect_schema()
+    metadata_keys = ["code", *(name for name in modifiers if name in metadata_schema)]
+    metadata_columns = _metadata_columns(metadata_schema, metadata_keys, modifiers)
     split_count_names = _split_count_names(split_columns)
     numeric_columns = _numeric_columns(numeric_stats)
     token = uuid4().hex
@@ -289,19 +293,23 @@ def summarize(
                 )
             safe = _numeric_statistics(safe, medians, count_keys, config)
         metadata = metadata.join(
-            safe.select(base_keys),
-            on=base_keys,
+            safe.select(metadata_keys),
+            on=metadata_keys,
             how="semi",
             nulls_equal=True,
         )
-        _validate_metadata(metadata, modifiers, [*split_count_names, *numeric_columns])
+        _validate_metadata(
+            metadata, metadata_keys, [*split_count_names, *numeric_columns]
+        )
+        # Modifier values always come from the counts, so each released row keeps
+        # its own, whichever modifiers the metadata is keyed by.
         common = safe.join(
-            metadata, on=base_keys, how="left", nulls_equal=True
+            metadata, on=metadata_keys, how="left", nulls_equal=True
         ).with_columns(pl.lit(False).alias("is_masked"))
         count_columns = [*_COUNT_COLUMNS, *split_count_names]
         columns = [
             *scope,
-            *metadata.collect_schema().names(),
+            *metadata_columns,
             *count_columns,
             *numeric_columns,
             "is_masked",
@@ -321,7 +329,7 @@ def summarize(
                 event_parts,
                 split_parts,
                 rare_keys,
-                metadata,
+                metadata_columns,
                 scope,
                 count_keys,
                 split_columns,
@@ -510,23 +518,29 @@ def _mask_split_counts(
     )
 
 
+def _metadata_columns(
+    schema: pl.Schema, keys: Sequence[str], modifiers: Sequence[str]
+) -> dict[str, pl.DataType]:
+    """The metadata columns, with the declared modifiers it lacks after its keys."""
+
+    columns = list(schema.items())
+    end = 1 + max(schema.names().index(key) for key in keys)
+    absent = [(name, pl.String) for name in modifiers if name not in schema]
+    return dict([*columns[:end], *absent, *columns[end:]])
+
+
 def _validate_metadata(
     metadata: pl.LazyFrame,
-    modifiers: Sequence[str],
+    keys: Sequence[str],
     extra_reserved: Sequence[str],
 ) -> None:
     names = set(metadata.collect_schema().names())
-    missing = set(modifiers) - names
-    if missing:
-        raise ValueError(
-            f"Code metadata is missing declared modifiers: {sorted(missing)}"
-        )
     collisions = names & (_RESERVED_COLUMNS | set(extra_reserved))
     if collisions:
         raise ValueError(
             f"Code metadata uses reserved output columns: {sorted(collisions)}"
         )
-    keys = ["code", *modifiers]
+    keys = list(keys)
     duplicate = metadata.group_by(keys).len().filter(pl.col("len") > 1).limit(1)
     _raise_if_any(duplicate, f"Code metadata keys are not unique: {keys}")
 
@@ -535,7 +549,7 @@ def _partitioned_rare_bucket(
     event_parts: dict[str, Path],
     split_parts: dict[str, Path] | None,
     rare_keys: pl.LazyFrame,
-    metadata: pl.LazyFrame,
+    metadata_columns: dict[str, pl.DataType],
     scope: Sequence[str],
     count_keys: Sequence[str],
     split_columns: Sequence[tuple[str, str, str]],
@@ -559,12 +573,11 @@ def _partitioned_rare_bucket(
     if split_columns:
         result = _mask_split_counts(result, split_columns, config.min_split_subjects)
 
-    schema = metadata.collect_schema()
     values = [
         pl.lit(config.rare_code_label, dtype=dtype).alias(name)
         if name == "code"
         else pl.lit(None, dtype=dtype).alias(name)
-        for name, dtype in schema.items()
+        for name, dtype in metadata_columns.items()
     ]
     return _round_counts(
         result.with_columns(*values, pl.lit(True).alias("is_masked")),
