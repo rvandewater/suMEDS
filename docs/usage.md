@@ -346,6 +346,20 @@ suMEDS therefore uses different keys for counting and for metadata:
   every modifier variant of that code; when it has some, its row applies to
   every variant of the modifiers it lacks. The rows of `codes.parquet` that
   match a released row must be unique on these keys, or the summary fails.
+- **Without an exact match**, a released row falls back to the code's own
+  metadata: the code's row whose modifiers are all null, or else the code's only
+  row. This covers a modifier that only some events fill, such as MIMIC-IV's
+  `unit`: a `LAB` event without a unit still gets the description and parents of
+  its code's row, whose `unit` is set. A code with several rows, none of them
+  with null modifiers, has no row that describes such a variant, so its
+  metadata stays null there. The code's rows with null modifiers must be unique
+  too.
+- **Modifier columns that cannot be keys.** Data modifiers are strings. A
+  modifier column of `codes.parquet` with another scalar type (an all-null
+  column written null-typed, a categorical) is read as a string. A nested one,
+  such as the `List(String)` that older MEDS-Extract builds write for every
+  extra column, is not a key and is left out: the summary is then keyed as if
+  `codes.parquet` lacked it.
 
 Modifier values always come from the event counts, so every released row carries
 its own, whichever modifiers `codes.parquet` has. A column of `codes.parquet`
@@ -356,3 +370,7 @@ For example, with `"code_modifier_columns": ["unit"]` and a `codes.parquet` that
 has one row for `GLUCOSE` and no `unit` column, the summary has a row for each
 released unit of `GLUCOSE` (say `mg/dL` and `mmol/L`), each with its own counts
 and both with that row's description and parent codes.
+
+With a `unit` column in `codes.parquet` instead, say a `GLUCOSE` row with
+`mg/dL`, the `mg/dL` events match that row exactly, and the released `mmol/L`
+and null-unit variants of `GLUCOSE` fall back to it, as the code's only row.
