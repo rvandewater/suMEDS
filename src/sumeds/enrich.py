@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 from uuid import uuid4
 
 import meds
@@ -119,7 +119,14 @@ def _enrich(
     frame: pl.LazyFrame,
     config: EnrichmentConfig,
     stats: dict[str, Any] | None = None,
+    dataset_codes: Collection[str] = (),
 ) -> pl.LazyFrame:
+    """Enrich ``frame``; ``dataset_codes`` adds the dataset's codes it lacks.
+
+    A parent that is a code of the dataset (``frame`` or ``dataset_codes``) is an
+    in-dataset parent, see :func:`_dataset_codes`.
+    """
+
     schema = frame.collect_schema()
     if "code" not in schema:
         raise ValueError("metadata to enrich must contain a 'code' column")
@@ -135,11 +142,12 @@ def _enrich(
         else frame
     )
     stats = {} if stats is None else stats
+    dataset = _dataset_codes(frame, dataset_codes)
     if config.rules is None:
-        enrichment = _athena_enrichment(released, config, stats)
+        enrichment = _athena_enrichment(released, config, stats, dataset)
         parent_rank = _PARENT_REFERENCE_RANK
     else:
-        enrichment, parent_rank = _rule_enrichment(released, config, stats)
+        enrichment, parent_rank = _rule_enrichment(released, config, stats, dataset)
     joined = frame.join(enrichment, on="code", how="left", maintain_order="left")
 
     expressions = []
@@ -163,7 +171,7 @@ def _enrich(
                     matched = pl.concat_str(
                         "_athena_vocabulary_id", "_athena_concept_code", separator="//"
                     )
-                    remaining = _without_reference(existing, matched)
+                    remaining = _without_reference(existing, matched, dataset)
                     matched_by_parent = pl.col(_MATCH_RANK) == parent_rank
                     present = (
                         pl.when(matched_by_parent)
@@ -323,12 +331,16 @@ def _append_new(
     )
 
 
-def _without_reference(parents: pl.Expr, reference: pl.Expr) -> pl.Expr:
+def _without_reference(
+    parents: pl.Expr, reference: pl.Expr, dataset: frozenset[str] = frozenset()
+) -> pl.Expr:
     """The non-null ``parents`` other than those naming ``reference``, in order.
 
     ``reference`` is ``VOCABULARY//CODE``; a parent names it when its vocabulary and
-    code components match, in either spelling. ``list.eval`` cannot see other columns,
-    so ``reference`` travels inside the list as a marked last element.
+    code components match, in either spelling. A parent in ``dataset`` (an
+    in-dataset parent) is another code, so it is always kept. ``list.eval`` cannot
+    see other columns, so ``reference`` travels inside the list as a marked last
+    element.
     """
 
     def tagged(values: pl.Expr, is_reference: bool) -> pl.Expr:
@@ -342,14 +354,44 @@ def _without_reference(parents: pl.Expr, reference: pl.Expr) -> pl.Expr:
 
     entry = pl.element().struct
     target = entry.field("key").filter(entry.field("reference")).first()
+    kept = entry.field("key") != target
+    if dataset:
+        kept = kept | entry.field("value").is_in(_literal_set(dataset))
     return pl.concat_list(
         tagged(parents.list.drop_nulls(), False),
         tagged(pl.concat_list(reference), True),
     ).list.eval(
-        pl.element()
-        .filter(~entry.field("reference") & (entry.field("key") != target))
-        .struct.field("value")
+        pl.element().filter(~entry.field("reference") & kept).struct.field("value")
     )
+
+
+def _literal_set(values: Collection[str]) -> pl.Expr:
+    """``values`` as one list literal, for ``is_in``."""
+
+    return pl.lit(pl.Series(sorted(values), dtype=pl.String).implode())
+
+
+def _dataset_codes(frame: pl.LazyFrame, extra: Collection[str] = ()) -> frozenset[str]:
+    """The codes of the dataset: those of ``frame``, plus ``extra``.
+
+    A ``parent_codes`` entry that is one of them, other than the code itself, is an
+    in-dataset parent (``LAB//50912`` for ``LAB//50912//mg/dL``, or a parent that a
+    hierarchy rule added). It names another code of the same table, not a concept of
+    a vocabulary: it is never taken for the code's own vocabulary match, never
+    dropped as its self-reference, and is reported apart from the vocabulary
+    references. Only tables with ``parent_codes`` need them.
+    """
+
+    if "parent_codes" not in frame.collect_schema():
+        return frozenset(extra)
+    codes = (
+        frame.select(pl.col("code").cast(pl.String))
+        .unique()
+        .drop_nulls()
+        .collect(engine="streaming")
+        .get_column("code")
+    )
+    return frozenset(codes) | frozenset(extra)
 
 
 def enrich_file(
@@ -607,8 +649,15 @@ def _write_dataset_metadata(dataset: _DatasetMetadata, record: dict[str, Any]) -
         staged.unlink(missing_ok=True)
 
 
-def _coverage(frame: pl.LazyFrame, *, links: bool = True) -> dict[str, int]:
-    """Count rows, codes and filled fields; ``links`` also counts parent-code entries."""
+def _coverage(
+    frame: pl.LazyFrame, *, links: bool = True, dataset_codes: Collection[str] = ()
+) -> dict[str, int]:
+    """Count rows, codes and filled fields; ``links`` also counts parent-code entries.
+
+    A parent is a same-dataset parent when it is a code of ``frame`` or of
+    ``dataset_codes`` (the codes of a summary's ``codes.parquet``, which the summary
+    may not release), other than the code itself.
+    """
 
     schema = frame.collect_schema()
     expressions = [
@@ -646,7 +695,7 @@ def _coverage(frame: pl.LazyFrame, *, links: bool = True) -> dict[str, int]:
             parents.cast(pl.List(pl.String), strict=False),
             *(["parent_names"] if "parent_names" in schema else ()),
         ).collect(engine="streaming")
-        codes = set(data["code"].drop_nulls())
+        codes = set(data["code"].drop_nulls()) | set(dataset_codes)
         lists = data["parent_codes"].to_list()
         coverage["parent_links"] = sum(
             parent is not None for values in lists for parent in values or ()
@@ -714,6 +763,11 @@ def _print_enrichment_report(
             "  Existing parent references: "
             f"{references['resolved']:,} of {references['references']:,} found "
             f"(Athena {references['athena']:,}, pack {references['pack']:,})"
+        )
+    if references and references.get("dataset_parents"):
+        print(
+            "  In-dataset parents:         "
+            f"{references['dataset_parents']:,} kept, not vocabulary references"
         )
     if not stats or "rules" not in stats:
         return
@@ -846,8 +900,13 @@ def _components(value: pl.Expr) -> pl.Expr:
     )
 
 
-def _code_candidates(frame: pl.LazyFrame, offset: int = 0) -> pl.LazyFrame:
-    """Heuristic layout candidates; ``offset`` shifts their ranks after rules."""
+def _code_candidates(
+    frame: pl.LazyFrame, offset: int = 0, dataset: frozenset[str] = frozenset()
+) -> pl.LazyFrame:
+    """Heuristic layout candidates; ``offset`` shifts their ranks after rules.
+
+    A parent in ``dataset`` is another code of the table, so it is not a candidate.
+    """
 
     code = pl.col("code").cast(pl.String)
     codes = frame.select(
@@ -904,6 +963,11 @@ def _code_candidates(frame: pl.LazyFrame, offset: int = 0) -> pl.LazyFrame:
             )
             .explode("_reference")
             .drop_nulls("_reference")
+            .filter(
+                ~pl.col("_reference").is_in(_literal_set(dataset))
+                if dataset
+                else pl.lit(True)
+            )
             .with_columns(_components(pl.col("_reference")).alias("_parts"))
             .filter(~same_vocabulary | same_code)
             .unique()
@@ -969,6 +1033,31 @@ def _parent_references(lists: dict[str, list[str]]) -> dict[str, list[str]]:
         if keys:
             result[code] = list(dict.fromkeys(keys))
     return result
+
+
+def _reference_stats(
+    lists: dict[str, list[str]],
+    found: Collection[str],
+    dataset: frozenset[str],
+) -> dict[str, int]:
+    """Count the vocabulary references and the in-dataset parents apart.
+
+    Every parent is looked up, so a code of the table that a vocabulary holds
+    (``LOINC/2160-0`` in a table of LOINC codes) is a vocabulary reference. The
+    other codes of the table among the parents are in-dataset parents, not
+    references that were not found.
+    """
+
+    references: set[str] = set()
+    dataset_parents: set[str] = set()
+    for code, values in lists.items():
+        for value in values:
+            key = _vocabulary_reference(value)
+            if value != code and value in dataset and key not in found:
+                dataset_parents.add(value)
+            elif key:
+                references.add(key)
+    return {"references": len(references), "dataset_parents": len(dataset_parents)}
 
 
 def _reference_candidates(keys: list[str]) -> pl.LazyFrame:
@@ -1080,15 +1169,19 @@ def _enrichment_frame(records: dict[str, dict[str, Any]]) -> pl.LazyFrame:
 
 
 def _athena_enrichment(
-    released: pl.LazyFrame, config: EnrichmentConfig, stats: dict[str, Any]
+    released: pl.LazyFrame,
+    config: EnrichmentConfig,
+    stats: dict[str, Any],
+    dataset: frozenset[str] = frozenset(),
 ) -> pl.LazyFrame:
     """Athena matches of the codes, with their existing parent references looked up."""
 
-    references = (
-        _parent_references(_parent_lists(released)) if config.parent_codes else {}
-    )
+    lists = _parent_lists(released) if config.parent_codes else {}
+    references = _parent_references(lists)
     keys = sorted({key for values in references.values() for key in values})
-    candidates = pl.concat([_code_candidates(released), _reference_candidates(keys)])
+    candidates = pl.concat(
+        [_code_candidates(released, dataset=dataset), _reference_candidates(keys)]
+    )
     matches, found = _split_references(
         _collapse_matches(
             _athena_matches(candidates, config), _PARENT_REFERENCE_RANK
@@ -1099,7 +1192,7 @@ def _athena_enrichment(
     }
     _add_reference_parents(records, references, found)
     stats["references"] = {
-        "references": len(keys),
+        **_reference_stats(lists, found, dataset),
         "resolved": len(found),
         "athena": len(found),
         "pack": 0,
@@ -1108,7 +1201,10 @@ def _athena_enrichment(
 
 
 def _rule_enrichment(
-    released: pl.LazyFrame, config: EnrichmentConfig, stats: dict[str, Any]
+    released: pl.LazyFrame,
+    config: EnrichmentConfig,
+    stats: dict[str, Any],
+    dataset: frozenset[str] = frozenset(),
 ) -> tuple[pl.LazyFrame, int]:
     """Resolve codes through rules, Athena, packs, and same-table hierarchy.
 
@@ -1185,7 +1281,7 @@ def _rule_enrichment(
                 hits.setdefault(code, []).append((index, values))
                 rule_stats[index]["matched"] += 1
 
-    layouts = _code_candidates(released, offset).collect(engine="streaming")
+    layouts = _code_candidates(released, offset, dataset).collect(engine="streaming")
     lists = _parent_lists(released)
     parent_references = _parent_references(lists) if config.parent_codes else {}
     reference_keys = sorted(
@@ -1409,7 +1505,7 @@ def _rule_enrichment(
     stats["rules"] = rule_stats
     stats["layouts"] = layout_stats
     stats["references"] = {
-        "references": len(reference_keys),
+        **_reference_stats(lists if config.parent_codes else {}, found, dataset),
         "resolved": len(found),
         "athena": len(found_athena),
         "pack": sum(tuple(key.split("//", 1)) in entries for key in reference_keys),

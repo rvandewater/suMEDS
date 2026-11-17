@@ -1176,3 +1176,111 @@ def test_postgres_looks_up_references_in_the_same_batch(
         "SNOMED/BRANCH": "Branch",
         "SNOMED//ROOT": "Root",
     }
+
+
+# Unit siblings with their stem as an in-dataset parent (rvandewater/alignEHR#47).
+# ``LOINC/5803-2`` is a code of the table and a LOINC concept; ``MED//START//x``
+# is a code of the table that no vocabulary holds.
+_SIBLINGS = pl.LazyFrame(
+    {
+        "code": [
+            "LOINC/5803-2",
+            "LOINC/5803-2//units",
+            "MED//START//x",
+            "MED//START//x//mg",
+        ],
+        "parent_codes": [
+            None,
+            ["LOINC/5803-2"],
+            ["SNOMED/PARENT"],
+            ["MED//START//x", "SNOMED/PARENT"],
+        ],
+    }
+)
+
+
+def test_in_dataset_parents_are_kept(athena_csv: Path) -> None:
+    for exclude in (False, True):
+        config = EnrichmentConfig(csv_dir=athena_csv, exclude_self_parent_code=exclude)
+        rows = {
+            row["code"]: row
+            for row in enrich_metadata(_SIBLINGS, config).collect().to_dicts()
+        }
+
+        # A parent that is another code of the table never identifies the code, so
+        # it is never dropped as the code's own reference. It is still named.
+        units = rows["LOINC/5803-2//units"]
+        assert units["concept_id"] is None
+        assert units["parent_codes"] == ["LOINC/5803-2"]
+        assert _names(units["parent_names"]) == {"LOINC/5803-2": "Urine pH"}
+        # A vocabulary reference still identifies the code; the stem keeps its place.
+        mg = rows["MED//START//x//mg"]
+        assert mg["concept_id"] == 100
+        assert mg["parent_codes"] == [
+            "MED//START//x",
+            *(() if exclude else ("SNOMED/PARENT",)),
+            "SNOMED//BRANCH",
+            "SNOMED//ROOT",
+        ]
+        assert rows["LOINC/5803-2"]["concept_id"] == 300
+
+
+def test_report_counts_in_dataset_parents_apart(
+    athena_csv: Path, tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "codes.parquet"
+    _SIBLINGS.collect().write_parquet(source)
+
+    enrich_file(
+        source,
+        tmp_path / "out.parquet",
+        EnrichmentConfig(csv_dir=athena_csv),
+        verbose=True,
+    )
+
+    out = capsys.readouterr().out
+    # LOINC/5803-2 is a code of the table, but LOINC holds it: a vocabulary
+    # reference. MED//START//x is not a reference that was not found.
+    assert "Existing parent references: 2 of 2 found (Athena 2, pack 0)" in out
+    assert "In-dataset parents:         1 kept, not vocabulary references" in out
+    assert "Same-dataset parent links:  2 -> 2" in out
+
+
+def test_summary_parents_in_code_metadata_are_in_dataset_parents(
+    meds_dataset: Path, athena_csv: Path, tmp_path: Path, capsys
+) -> None:
+    # GROUP is a stem row without events: the summary does not release it, but it
+    # is still a code of the dataset.
+    pl.DataFrame(
+        {
+            "code": ["A", "B", "C", "GROUP"],
+            "modifier": ["main", "x", "z", None],
+            "parent_codes": [
+                ["GROUP", "SNOMED/PARENT"],
+                None,
+                None,
+                ["SNOMED/PARENT"],
+            ],
+        }
+    ).write_parquet(meds_dataset / "metadata" / "codes.parquet")
+
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(
+            min_subjects=3,
+            rare_code_action="drop",
+            enrichment=EnrichmentConfig(
+                csv_dir=athena_csv, exclude_self_parent_code=True
+            ),
+        ),
+        verbose=True,
+    )
+
+    row = pl.read_parquet(output).row(0, named=True)
+    assert row["code"] == "A"
+    assert row["concept_id"] == 100
+    assert row["parent_codes"] == ["GROUP", "SNOMED//BRANCH", "SNOMED//ROOT"]
+    out = capsys.readouterr().out
+    assert "Same-dataset parent links:  1 -> 1" in out
+    assert "In-dataset parents:         1 kept, not vocabulary references" in out

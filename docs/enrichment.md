@@ -122,6 +122,16 @@ merge into the table, overwriting nothing
 7. **Add same-table parents.** [Hierarchy rules](rules.md#hierarchy-rules)
    append parents that are codes of the same table.
 
+    An existing parent that is a code of the same table is an **in-dataset
+    parent**, not a vocabulary reference: `LAB//50912` for the unit sibling
+    `LAB//50912//mg/dL`, or a parent that a hierarchy rule added. It names
+    another row, so it never identifies the code in steps 2 to 4, and
+    `--exclude-self-parent-code` never removes it. It keeps its place in the
+    list. It is still looked up as in step 6, so one that a vocabulary holds
+    (`LOINC/2160-0` in a table of LOINC codes) is named and adds its ancestors.
+    A summary counts the codes of the whole `codes.parquet`, so a parent row
+    without events (a unit stem) is in-dataset too.
+
 8. **Merge.** Results are merged into the table without overwriting
    anything; see [Merge rules](#merge-rules).
 
@@ -234,7 +244,8 @@ Enrichment is non-destructive:
 The one opt-in exception is `--exclude-self-parent-code`
 (`exclude_self_parent_code: true`). It removes the existing parent reference
 that was used to match the code, so a code matched through `ICD9CM/428.40`
-loses that entry and keeps the rest.
+loses that entry and keeps the rest. In-dataset parents (codes of the same
+table) are never removed.
 
 ## Names
 
@@ -350,10 +361,14 @@ Enrichment report
 - **Parent codes (all entries)**: list entries before and after, and how many
   have a name.
 - **Same-dataset parent links**: parent entries that are codes of the same
-  table.
+  table. After a summary, the codes of the whole `codes.parquet` count, released
+  or not.
 - **Existing parent references**: distinct vocabulary references among the
   existing parents, how many were found, and in which source. Here Athena and
   the packs both know all 832.
+- **In-dataset parents**: distinct existing parents that are codes of the same
+  table and that no vocabulary holds. They are kept as they are and left out of
+  the references above. The eICU example has none.
 - **Vocabulary rules**: for each ontology and crosswalk rule, how many unique
   codes it matched, how many were validated by Athena or by a pack, and how
   many were tagged. A rule that could not run says why:

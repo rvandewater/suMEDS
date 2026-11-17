@@ -1413,6 +1413,47 @@ def test_packs_resolve_layouts_and_parent_references(
     assert "parent reference (unique codes): 4 validated (Athena 0, pack 4)" in out
 
 
+def test_packs_keep_in_dataset_parents(packs: Path, tmp_path: Path, capsys) -> None:
+    # Unit siblings whose stem is an in-dataset parent (rvandewater/alignEHR#47).
+    frame = pl.DataFrame(
+        {
+            "code": ["ICD10CM/I50.23", "ICD10CM/I50.23//x", "DX//chf", "DX//chf//y"],
+            "parent_codes": [
+                None,
+                ["ICD10CM/I50.23"],
+                ["ICD10CM/A04.72"],
+                ["DX//chf", "ICD10CM/A04.72"],
+            ],
+        }
+    )
+    rows = _enrich(frame, packs, HIERARCHY_ONLY, exclude_self_parent_code=True)
+    # Another code of the table never identifies the code, so it is not dropped as
+    # the code's own reference; the pack still names it and adds its ancestors.
+    sibling = rows["ICD10CM/I50.23//x"]
+    assert sibling["concept_code"] is None
+    assert sibling["parent_codes"] == [
+        "ICD10CM/I50.23",
+        "ICD10CM//I50.2",
+        "ICD10CM//I50",
+    ]
+    assert _names(sibling["parent_names"])["ICD10CM/I50.23"].startswith("Acute")
+    stem = rows["DX//chf//y"]
+    assert stem["concept_code"] == "A04.72"
+    assert stem["parent_codes"] == ["DX//chf", "ICD10CM//A04.7", "ICD10CM//A04"]
+
+    source = tmp_path / "codes.parquet"
+    frame.write_parquet(source)
+    enrich_file(
+        source,
+        tmp_path / "out.parquet",
+        EnrichmentConfig(rules=HIERARCHY_ONLY, ontology_source=str(packs)),
+        verbose=True,
+    )
+    out = capsys.readouterr().out
+    assert "Existing parent references: 2 of 2 found (Athena 0, pack 2)" in out
+    assert "In-dataset parents:         1 kept, not vocabulary references" in out
+
+
 def test_loinc_hierarchy_needs_rules_and_packs(
     athena_icd: Path, tmp_path: Path, capsys
 ) -> None:

@@ -343,11 +343,23 @@ def summarize(
         )
         if config.enrichment is not None:
             unenriched = result
-            result = _enrich(result, config.enrichment, stats)
+            # Parents that are codes of codes.parquet are in-dataset parents, even
+            # when the summary does not release them (a unit stem without events).
+            dataset_codes = frozenset(
+                metadata.select(pl.col("code").cast(pl.String))
+                .unique()
+                .drop_nulls()
+                .collect(engine="streaming")
+                .get_column("code")
+            )
+            result = _enrich(result, config.enrichment, stats, dataset_codes)
         sink_table(result, staged_path, format_)
         staged_path.replace(output)
         if verbose and config.enrichment is not None:
-            report = _coverage(unenriched), _coverage(scan_table(output))
+            report = (
+                _coverage(unenriched, dataset_codes=dataset_codes),
+                _coverage(scan_table(output), dataset_codes=dataset_codes),
+            )
     finally:
         counts_path.unlink(missing_ok=True)
         staged_path.unlink(missing_ok=True)
