@@ -86,3 +86,36 @@ def test_mimic_demo_declared_unit_modifier(tmp_path: Path) -> None:
     assert variants.filter(pl.col("len") > 1).height > 0
     assert variants["descriptions"].max() == 1
     assert released["subject_count"].min() >= 20
+
+
+@pytest.mark.skipif(not DEMO.exists(), reason="MIMIC-IV demo is not available")
+def test_mimic_demo_unit_metadata_with_null_data_units(tmp_path: Path) -> None:
+    # MIMIC-IV ETLs now write one String ``unit`` per code into codes.parquet,
+    # while only some events fill the declared ``unit`` modifier
+    # (rvandewater/alignEHR#47). A code's row still describes its null-unit events.
+    root = tmp_path / "MEDS_cohort"
+    shutil.copytree(DEMO, root)
+    dataset_json = root / "metadata" / "dataset.json"
+    dataset = json.loads(dataset_json.read_text())
+    dataset_json.write_text(json.dumps({**dataset, "code_modifier_columns": ["unit"]}))
+    shards = [str(path) for path in (root / "data").rglob("*.parquet")]
+    units = (
+        pl.scan_parquet(shards)
+        .drop_nulls("unit")
+        .group_by("code")
+        .agg(pl.col("unit").mode().sort().first())
+    )
+    codes_path = root / "metadata" / "codes.parquet"
+    codes = pl.read_parquet(codes_path).lazy().join(units, on="code", how="left")
+    codes.collect().write_parquet(codes_path)
+
+    output = summarize(
+        root, tmp_path / "mimic-units.parquet", SummaryConfig(min_subjects=20)
+    )
+    released = pl.read_parquet(output).filter(~pl.col("is_masked"))
+    described = codes.filter(pl.col("description").is_not_null()).select("code")
+    rows = released.join(described.collect(), on="code", how="semi")
+
+    # Rows whose unit differs from the code's row, null ones among them.
+    assert rows.filter(pl.col("unit").is_null()).height > 0
+    assert rows["description"].null_count() == 0
