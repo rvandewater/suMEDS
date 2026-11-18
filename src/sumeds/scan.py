@@ -101,12 +101,16 @@ def event_files(root: str | Path) -> list[Path]:
 
 
 def scan_events(
-    root: str | Path, modifiers: Sequence[str] = (), numeric: bool = False
+    root: str | Path,
+    modifiers: Sequence[str] = (),
+    numeric: bool = False,
+    timed: bool = False,
 ) -> pl.LazyFrame:
     """Validate shard footers and lazily project fields needed for counting.
 
     With ``numeric``, a Float64 ``numeric_value`` column is also projected;
-    shards without the optional MEDS column contribute nulls.
+    shards without the optional MEDS column contribute nulls. With ``timed``,
+    a boolean ``_timed`` column says whether each event has a ``time``.
     """
 
     files = event_files(root)
@@ -126,7 +130,9 @@ def scan_events(
                 or pa.types.is_large_string(schema.field(column).type)
             ):
                 raise ValueError(f"Code modifier '{column}' must be a string in {path}")
-    columns = ["subject_id", "code", *modifiers]
+    columns: list[str | pl.Expr] = ["subject_id", "code", *modifiers]
+    if timed:
+        columns.append(pl.col("time").is_not_null().alias("_timed"))
     if not numeric:
         return pl.scan_parquet([str(path) for path in files]).select(columns)
     value = pl.col("numeric_value").cast(pl.Float64)

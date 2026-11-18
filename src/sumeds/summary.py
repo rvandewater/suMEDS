@@ -24,7 +24,7 @@ from .scan import (
 )
 
 _COUNT_COLUMNS = ("event_count", "subject_count")
-_RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_masked", "split"}
+_RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_static", "is_masked", "split"}
 _NUMERIC_PARTIALS = (
     "_numeric_count",
     "_numeric_subjects",
@@ -50,8 +50,12 @@ def _code_occurrences(
     keys: Sequence[str],
     split_columns: Sequence[tuple[str, str, str]],
     numeric: bool = False,
+    timed: bool = False,
 ) -> pl.LazyFrame:
     expressions = _count_expressions(split_columns)
+    if timed:
+        # Timed events per cell; partitions add, and zero means the cell is static.
+        expressions.append(pl.col("_timed").sum().cast(pl.UInt64).alias("_timed_count"))
     if numeric:
         expressions.extend(_numeric_partial_expressions())
     if split_columns:
@@ -167,9 +171,10 @@ def _sink_partitioned_counts(
             keys,
             split_columns,
             numeric,
+            timed=True,
         ),
     )
-    names = [*_COUNT_COLUMNS, *_split_count_names(split_columns)]
+    names = [*_COUNT_COLUMNS, *_split_count_names(split_columns), "_timed_count"]
     if split_columns:
         names.append("_missing_split_count")
     # Subjects occur in exactly one hash partition, so exact subject counts add.
@@ -205,7 +210,7 @@ def summarize(
     modifiers = code_modifier_columns(metadata_json)
     metadata, metadata_keys = _keyed_metadata(scan_code_metadata(root), modifiers)
     numeric_stats = config.numeric_stats
-    events = scan_events(root, modifiers, numeric=bool(numeric_stats))
+    events = scan_events(root, modifiers, numeric=bool(numeric_stats), timed=True)
     splits = None
     scope: list[str] = []
     split_columns: list[tuple[str, str, str]] = []
@@ -270,7 +275,11 @@ def summarize(
                 missing_split,
                 "subject_splits does not cover every event subject",
             )
-        safe = counts.filter(pl.col("subject_count") >= config.min_subjects)
+        # Static: every event of the cell has a null time (MEDS's static
+        # measurements). Only this boolean is released, never the timed count.
+        safe = counts.filter(
+            pl.col("subject_count") >= config.min_subjects
+        ).with_columns((pl.col("_timed_count") == 0).alias("is_static"))
         if split_columns:
             safe = _mask_split_counts(safe, split_columns, config.min_split_subjects)
         if config.rare_code_action == "bucket":
@@ -304,6 +313,7 @@ def summarize(
             *scope,
             *metadata_columns,
             *count_columns,
+            "is_static",
             *numeric_columns,
             "is_masked",
         ]
@@ -331,10 +341,13 @@ def summarize(
             )
             # Mixed-code values have no meaning, so the bucket carries none.
             bucket = bucket.with_columns(
-                pl.lit(
-                    None, dtype=pl.UInt64 if name == "numeric_count" else pl.Float64
-                ).alias(name)
-                for name in numeric_columns
+                pl.lit(None, dtype=pl.Boolean).alias("is_static"),
+                *(
+                    pl.lit(
+                        None, dtype=pl.UInt64 if name == "numeric_count" else pl.Float64
+                    ).alias(name)
+                    for name in numeric_columns
+                ),
             ).select(columns)
             frames.append(bucket)
 

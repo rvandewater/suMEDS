@@ -323,6 +323,7 @@ Parquet when exact nested types matter.
 | `subject_count` | uint64 | Distinct subjects in the release cell or total |
 | `event_count_<split>` | uint64, nullable | Split event count; null below `min_split_subjects` |
 | `subject_count_<split>` | uint64, nullable | Split subject count; null below `min_split_subjects` |
+| `is_static` | boolean, nullable | Whether every event in the cell has a null `time` (a static measurement such as sex); null for the rare-code bucket |
 | `numeric_count` | uint64, nullable | Finite `numeric_value` rows; present when `numeric_stats` is set |
 | `numeric_min`, `numeric_max`, `numeric_mean`, `numeric_median`, `numeric_std` | float64, nullable | Requested statistics of finite `numeric_value` |
 | `numeric_ci_lower`, `numeric_ci_upper` | float64, nullable | Normal-approximation confidence interval of the mean |

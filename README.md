@@ -214,7 +214,9 @@ path = summarize(
 
 The output format is inferred from `.parquet`, `.csv`, or `.json` (with
 `.jsonl`/`.ndjson` also supported). It preserves all code-metadata extension columns and adds
-`event_count`, `subject_count`, and `is_masked`. `per_split=True` emits one row
+`event_count`, `subject_count`, `is_static`, and `is_masked`. `is_static` is true when every event of the
+code has a null `time` (a static measurement such as sex), which cohort tools such as ACES only accept as
+patient demographics; it is null for the rare-code bucket. `per_split=True` emits one row
 per split. `split_columns=True` keeps the total row and adds columns such as
 `event_count_train` and `subject_count_train` from `subject_splits.parquet`.
 Set `min_split_subjects` above 1 to suppress rare split-level cells.
