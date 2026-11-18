@@ -124,23 +124,31 @@ def test_config_rejects_typos_and_invalid_values(tmp_path: Path) -> None:
         SummaryConfig(numeric_stats=["mode"])
     with pytest.raises(ValueError, match="numeric_ci_level"):
         SummaryConfig(numeric_ci_level=95)
+    for value in (0, 0.5, True, "0.1"):
+        with pytest.raises(ValueError, match="numeric_percentile"):
+            SummaryConfig(numeric_percentile=value)
 
 
 def test_numeric_stats_config_and_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sumeds.config import NUMERIC_STATS
+    from sumeds.config import DEFAULT_NUMERIC_STATS, NUMERIC_STATS
 
+    assert "min" not in DEFAULT_NUMERIC_STATS and "max" not in DEFAULT_NUMERIC_STATS
     assert SummaryConfig().numeric_stats == ()
-    assert SummaryConfig(numeric_stats=True).numeric_stats == NUMERIC_STATS
+    assert SummaryConfig(numeric_stats=True).numeric_stats == DEFAULT_NUMERIC_STATS
+    assert SummaryConfig(numeric_stats="default").numeric_stats == DEFAULT_NUMERIC_STATS
+    assert SummaryConfig(numeric_stats="all").numeric_stats == NUMERIC_STATS
     assert SummaryConfig(numeric_stats="std, avg").numeric_stats == ("mean", "std")
     path = tmp_path / "numeric.yaml"
     path.write_text(
         "summary:\n  numeric_stats: [median, max]\n  numeric_ci_level: 0.9\n"
+        "  numeric_percentile: 0.1\n"
     )
     config = SummaryConfig.from_yaml(path)
     assert config.numeric_stats == ("max", "median")
     assert config.numeric_ci_level == 0.9
+    assert config.numeric_percentile == 0.1
 
     captured = []
     monkeypatch.setattr(
@@ -148,12 +156,16 @@ def test_numeric_stats_config_and_cli(
         lambda root, output, config: captured.append(config) or output,
     )
     for flags, expected in (
-        (["--numeric-stats"], NUMERIC_STATS),
+        (["--numeric-stats"], DEFAULT_NUMERIC_STATS),
+        (["--numeric-stats", "all"], NUMERIC_STATS),
         (["--numeric-stats", "min,ci"], ("min", "ci")),
         (["-c", str(path), "--numeric-stats", "none"], ()),
     ):
         assert main([str(tmp_path), "-o", str(tmp_path / "o.parquet"), *flags]) == 0
         assert captured[-1].numeric_stats == expected
+    flags = ["--numeric-stats", "percentiles", "--numeric-percentile", "0.1"]
+    assert main([str(tmp_path), "-o", str(tmp_path / "o.parquet"), *flags]) == 0
+    assert captured[-1].numeric_percentile == 0.1
 
 
 def test_cli_source_keeps_yaml_hierarchy_options(

@@ -21,7 +21,9 @@ PostgreSQL, matched by rules, or restored from local vocabulary files. Pack
 fetching requests only vocabulary shards (named by the first one or two
 characters of vocabulary codes) and crosswalk tables, never dataset codes, and
 hierarchy rules only link codes that are already released. The output never contains subject
-identifiers, event timestamps, raw text values, numeric values, or extrema.
+identifiers, event timestamps, or raw text values. It contains individual
+numeric values only if you request `numeric_min` or `numeric_max` (see
+[Numeric statistics](#numeric-statistics)).
 
 With row-per-split summaries, `min_subjects` is applied independently within
 each split. In wide `split_columns` output, total rows use `min_subjects` while
@@ -45,9 +47,26 @@ from the threshold; `is_masked` remains authoritative.
 ## Numeric statistics
 
 `numeric_stats` cells are suppressed unless at least `min_subjects` distinct
-subjects contribute a finite value. `numeric_min` and `numeric_max` are still
-individual measurements; omit them when a single person's extreme value is
-sensitive.
+subjects contribute a finite value. That stops a code that is common, but
+measured in only a few people, from revealing their values through its mean or
+median.
+
+!!! warning "`numeric_min` and `numeric_max` are individual measurements"
+    Each is exactly one subject's most extreme value, whatever `min_subjects`
+    is: 20 or more people having a value does not hide the single highest one.
+    An extreme weight, age or lab result can identify a person,
+    especially with external knowledge. `numeric_stats: true` therefore leaves
+    them out, and requesting them (by name or with `all`) prints a warning on
+    every run. Release them only after reviewing the extremes of every
+    released code.
+
+`percentiles` (`numeric_p_lower`, `numeric_p_upper`) describe the range
+instead. Each bound is released only when at least `min_subjects` distinct
+subjects have a value at or beyond it, so it lies inside a group of at least
+that many people rather than at one person's extreme. With linear
+interpolation a bound can still equal one subject's value, as the median can;
+like every released statistic, it is never attributable to fewer than
+`min_subjects` people.
 
 ## Limitations
 

@@ -37,8 +37,9 @@ uv run suMEDS MEDS_ROOT -o code-summary.{parquet,csv,json} [OPTIONS]
 | `--rare-code-action bucket\|drop` | Combine or omit rare rows |
 | `--rare-code-label TEXT` | Sentinel used for the bucket |
 | `--round-counts-to N` | Round released counts to a multiple |
-| `--numeric-stats [STATS]` | Summarize `numeric_value`; bare flag adds all stats, or pass e.g. `min,max,mean` or `none` |
+| `--numeric-stats [STATS]` | Summarize `numeric_value`; bare flag adds `mean,median,std,ci,percentiles`, or pass a list, `all` (adds `min,max`), or `none`. `min` and `max` warn: each releases one subject's measurement |
 | `--numeric-ci-level P` | Confidence level for `numeric_ci_*` (default `0.95`) |
+| `--numeric-percentile Q` | Quantile for `numeric_p_lower`; `numeric_p_upper` uses `1 − Q` (default `0.05`) |
 | `--athena-csv DIR` | Enrich released codes from local Athena files |
 | `--athena-postgres CONNINFO` | Enrich released codes through `psql` |
 | `--parent-codes`, `--no-parent-codes` | Enable/disable all-ancestor expansion (enabled by default) |
@@ -324,8 +325,9 @@ Parquet when exact nested types matter.
 | `event_count_<split>` | uint64, nullable | Split event count; null below `min_split_subjects` |
 | `subject_count_<split>` | uint64, nullable | Split subject count; null below `min_split_subjects` |
 | `numeric_count` | uint64, nullable | Finite `numeric_value` rows; present when `numeric_stats` is set |
-| `numeric_min`, `numeric_max`, `numeric_mean`, `numeric_median`, `numeric_std` | float64, nullable | Requested statistics of finite `numeric_value` |
+| `numeric_min`, `numeric_max`, `numeric_mean`, `numeric_median`, `numeric_std` | float64, nullable | Requested statistics of finite `numeric_value`; `numeric_min` and `numeric_max` are individual measurements (opt-in, with a warning) |
 | `numeric_ci_lower`, `numeric_ci_upper` | float64, nullable | Normal-approximation confidence interval of the mean |
+| `numeric_p_lower`, `numeric_p_upper` | float64, nullable | `numeric_percentile` and `1 − numeric_percentile` quantiles; each null unless `min_subjects` subjects lie in its tail |
 | `is_masked` | boolean | Whether the row combines rare codes |
 
 Code modifier columns declared by `metadata/dataset.json` are part of the

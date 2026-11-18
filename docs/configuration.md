@@ -10,6 +10,7 @@ summary:
   partitions: 256
   numeric_stats: false
   numeric_ci_level: 0.95
+  numeric_percentile: 0.05
 
 privacy:
   min_subjects: 20
@@ -71,16 +72,35 @@ on completion or ordinary errors.
 
 Default: `false` (no numeric columns).
 
-Summarizes each released code's `numeric_value`. Use `true` for every
-statistic, or a list chosen from `min`, `max`, `mean` (alias `avg`), `median`,
-`std`, and `ci`. Output columns are `numeric_count` plus `numeric_<stat>`;
-`ci` adds `numeric_ci_lower` and `numeric_ci_upper`. Columns follow that
+Summarizes each released code's `numeric_value`. `true` (or `default`)
+releases `mean`, `median`, `std`, `ci` and `percentiles`; `all` adds `min` and
+`max`. Or give a list chosen from `min`, `max`, `mean` (alias `avg`), `median`,
+`std`, `ci`, and `percentiles`. Output columns are `numeric_count` plus
+`numeric_<stat>`; `ci` adds `numeric_ci_lower` and `numeric_ci_upper`, and
+`percentiles` adds `numeric_p_lower` and `numeric_p_upper`. Columns follow that
 canonical order regardless of the order given.
+
+!!! warning "`min` and `max` release individual measurements"
+    `numeric_min` and `numeric_max` are each one subject's most extreme
+    value: the heaviest patient's weight, the highest lab result. `min_subjects`
+    does not protect them, since it only requires other subjects to have
+    values too, and an extreme value can identify a person. They are therefore
+    left out of `true`, and a summary that releases them prints a warning.
+    Use `percentiles` for the range of a code's values; release `min` and
+    `max` only after reviewing the extremes of every released code.
 
 - Null, NaN, and infinite values are ignored. Shards without the optional
   `numeric_value` column contribute no values.
 - `std` is the sample standard deviation (n − 1); `ci` is the
   normal-approximation interval `mean ± z · std / √n`.
+- `percentiles` are the `numeric_percentile` and `1 − numeric_percentile`
+  quantiles, linearly interpolated (the 5th and 95th by default). Each bound
+  is released only when at least `min_subjects` distinct subjects have a value
+  in the tail it bounds (at or below the lower bound, at or above the upper),
+  so it never lies among the values of fewer people than that. A code needs
+  roughly `min_subjects / numeric_percentile` subjects with values (400 for the
+  defaults) before both bounds appear; raise `numeric_percentile` (for example
+  to `0.25` for the quartiles) for smaller codes.
 - Statistics are released only when at least `min_subjects` distinct subjects
   contribute values to that cell; otherwise every `numeric_*` column is null.
   The `__RARE__` bucket row never carries statistics. `numeric_count` is
@@ -88,13 +108,18 @@ canonical order regardless of the order given.
 - With `per_split`, statistics are per split. With `split_columns`, they
   describe the total only.
 - Count, min, max, mean, and std are merged exactly from the existing subject
-  partitions. `median` needs one extra pass that holds every value of each
-  released code in memory, so omit it for very large datasets if memory is
-  tight.
+  partitions. `median` and `percentiles` need extra passes that hold every
+  value of each released code in memory, so omit them for very large datasets
+  if memory is tight.
 
 ### `numeric_ci_level`
 
 Default: `0.95`. Must lie strictly between 0 and 1.
+
+### `numeric_percentile`
+
+Default: `0.05`. Must lie strictly between 0 and 0.5. `numeric_p_lower` is this
+quantile and `numeric_p_upper` is `1 − numeric_percentile`.
 
 ## Privacy options
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import warnings
 from pathlib import Path
 from statistics import NormalDist
 from typing import Callable, Sequence
@@ -11,7 +12,7 @@ from uuid import uuid4
 
 import polars as pl
 
-from .config import SummaryConfig
+from .config import EXTREMA_STATS, SummaryConfig
 from .enrich import _coverage, _enrich, _print_enrichment_report
 from .io import output_format, scan_table, sink_table
 from .scan import (
@@ -32,6 +33,12 @@ _NUMERIC_PARTIALS = (
     "_numeric_max",
     "_numeric_mean",
     "_numeric_m2",
+)
+_EXACT_PARTIALS = (
+    "_numeric_p_lower",
+    "_numeric_p_upper",
+    "_numeric_lower_tail",
+    "_numeric_upper_tail",
 )
 
 
@@ -205,6 +212,7 @@ def summarize(
     modifiers = code_modifier_columns(metadata_json)
     metadata = scan_code_metadata(root)
     numeric_stats = config.numeric_stats
+    _warn_extrema(numeric_stats)
     events = scan_events(root, modifiers, numeric=bool(numeric_stats))
     splits = None
     scope: list[str] = []
@@ -282,16 +290,22 @@ def summarize(
                 f"rare_code_label already exists: {config.rare_code_label!r}",
             )
         if numeric_stats:
-            medians = None
-            if "median" in numeric_stats:
-                medians = _sink_medians(
+            exact = None
+            if {"median", "percentiles"} & set(numeric_stats):
+                exact = _sink_exact_statistics(
                     event_parts,
                     split_parts if config.per_split else None,
                     safe.select(count_keys),
                     count_keys,
-                    work_path / "median.parquet",
+                    work_path / "exact",
+                    median="median" in numeric_stats,
+                    percentile=(
+                        config.numeric_percentile
+                        if "percentiles" in numeric_stats
+                        else None
+                    ),
                 )
-            safe = _numeric_statistics(safe, medians, count_keys, config)
+            safe = _numeric_statistics(safe, exact, count_keys, config)
         metadata = metadata.join(
             safe.select(metadata_keys),
             on=metadata_keys,
@@ -411,6 +425,8 @@ def _numeric_columns(stats: Sequence[str]) -> list[str]:
     for stat in stats:
         if stat == "ci":
             names.extend(("numeric_ci_lower", "numeric_ci_upper"))
+        elif stat == "percentiles":
+            names.extend(("numeric_p_lower", "numeric_p_upper"))
         else:
             names.append(f"numeric_{stat}")
     return names
@@ -450,37 +466,95 @@ def _merge_numeric_partials() -> list[pl.Expr]:
     ]
 
 
-def _sink_medians(
+def _warn_extrema(stats: Sequence[str]) -> None:
+    extrema = [f"numeric_{name}" for name in EXTREMA_STATS if name in stats]
+    if extrema:
+        warnings.warn(
+            f"{' and '.join(extrema)} {'release' if len(extrema) > 1 else 'releases'} "
+            "one subject's measurement for every code: the most extreme value, which "
+            "can identify that person whatever min_subjects is. Prefer numeric_stats "
+            "'percentiles' (numeric_p_lower, numeric_p_upper) unless this release has "
+            "been reviewed for it.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _sink_exact_statistics(
     event_parts: dict[str, Path],
     split_parts: dict[str, Path] | None,
     keys: pl.LazyFrame,
     count_keys: Sequence[str],
     output: Path,
+    *,
+    median: bool,
+    percentile: float | None,
 ) -> pl.LazyFrame:
-    # ponytail: exact medians are not additive across subject partitions, so
-    # this pass holds every released code's values; opt-in via numeric_stats.
-    events = pl.concat(
-        [
-            _partition_events(path, split_parts, validate_splits=False)
-            for _, path in sorted(event_parts.items())
-        ]
+    """Median and percentiles, with the subjects in each percentile's tail.
+
+    These are not additive across subject partitions, so this pass holds every
+    value of each released code in memory; both are opt-in via numeric_stats.
+    """
+
+    output.mkdir(parents=True, exist_ok=True)
+    keys_list = list(count_keys)
+    values = (
+        pl.concat(
+            [
+                _partition_events(path, split_parts, validate_splits=False)
+                for _, path in sorted(event_parts.items())
+            ]
+        )
+        .join(keys, on=keys_list, how="semi", nulls_equal=True)
+        .filter(pl.col("numeric_value").is_finite())
     )
-    events.join(keys, on=list(count_keys), how="semi", nulls_equal=True).filter(
-        pl.col("numeric_value").is_finite()
-    ).group_by(list(count_keys)).agg(
-        pl.col("numeric_value").median().alias("numeric_median")
-    ).sink_parquet(output, maintain_order=False)
-    return pl.scan_parquet(output)
+    value = pl.col("numeric_value")
+    aggregates = []
+    if median:
+        aggregates.append(value.median().alias("numeric_median"))
+    if percentile is not None:
+        aggregates.extend(
+            [
+                value.quantile(percentile, "linear").alias("_numeric_p_lower"),
+                value.quantile(1 - percentile, "linear").alias("_numeric_p_upper"),
+            ]
+        )
+    values.group_by(keys_list).agg(aggregates).sink_parquet(
+        output / "quantiles.parquet", maintain_order=False
+    )
+    exact = pl.scan_parquet(output / "quantiles.parquet")
+    if percentile is None:
+        return exact
+    # A bound is released only if enough subjects lie in the tail it bounds, so it
+    # is never one person's (or a few people's) extreme value.
+    values.join(exact, on=keys_list, how="inner", nulls_equal=True).group_by(
+        keys_list
+    ).agg(
+        pl.col("subject_id")
+        .filter(value <= pl.col("_numeric_p_lower"))
+        .n_unique()
+        .alias("_numeric_lower_tail"),
+        pl.col("subject_id")
+        .filter(value >= pl.col("_numeric_p_upper"))
+        .n_unique()
+        .alias("_numeric_upper_tail"),
+    ).sink_parquet(output / "tails.parquet", maintain_order=False)
+    return exact.join(
+        pl.scan_parquet(output / "tails.parquet"),
+        on=keys_list,
+        how="left",
+        nulls_equal=True,
+    )
 
 
 def _numeric_statistics(
     frame: pl.LazyFrame,
-    medians: pl.LazyFrame | None,
+    exact: pl.LazyFrame | None,
     count_keys: Sequence[str],
     config: SummaryConfig,
 ) -> pl.LazyFrame:
-    if medians is not None:
-        frame = frame.join(medians, on=list(count_keys), how="left", nulls_equal=True)
+    if exact is not None:
+        frame = frame.join(exact, on=list(count_keys), how="left", nulls_equal=True)
     count = pl.col("_numeric_count").cast(pl.Float64)
     mean = pl.col("_numeric_mean")
     std = pl.when(count > 1).then((pl.col("_numeric_m2") / (count - 1)).sqrt())
@@ -498,10 +572,17 @@ def _numeric_statistics(
     }
     # Values from fewer than min_subjects people are suppressed like rare codes.
     released = pl.col("_numeric_subjects") >= config.min_subjects
-    return frame.with_columns(
+    if "percentiles" in config.numeric_stats:
+        for side in ("lower", "upper"):
+            tail = pl.col(f"_numeric_{side}_tail") >= config.min_subjects
+            values[f"numeric_p_{side}"] = pl.when(tail).then(
+                pl.col(f"_numeric_p_{side}")
+            )
+    frame = frame.with_columns(
         pl.when(released).then(values[name]).alias(name)
         for name in _numeric_columns(config.numeric_stats)
-    ).drop(_NUMERIC_PARTIALS)
+    )
+    return frame.drop([*_NUMERIC_PARTIALS, *_EXACT_PARTIALS], strict=False)
 
 
 def _mask_split_counts(
