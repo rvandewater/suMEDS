@@ -99,6 +99,10 @@ The comparison is exact, so the code must be in OMOP's `concept_code` format:
   another code of the same vocabulary. `LOINC/2160-0` under
   `LOINC/LP14355-9` is never matched as the Part, even when `2160-0` is
   missing from your download.
+- A parent that is a code of the same table (an [in-dataset
+  parent](enrichment.md#how-a-code-is-enriched), such as the unit stem
+  `LOINC/2160-0` of `LOINC/2160-0//mmol/L`) never identifies the code: it is
+  another row, enriched on its own. It is still looked up and named.
 
 In the eICU example, a diagnosis code with the parents `ICD9CM/428.40` and
 `ICD10CM/I50.40`, in either order, is matched as ICD-10-CM `I50.40`. Both

@@ -29,13 +29,62 @@ def test_bucket_masks_metadata_and_counts_subject_union(
         "parent_codes": ["ROOT"],
         "event_count": 3,
         "subject_count": 3,
+        "is_static": False,
         "is_masked": False,
     }
     assert rows["__RARE__"]["event_count"] == 4
+    assert rows["__RARE__"]["is_static"] is None
     assert rows["__RARE__"]["subject_count"] == 3  # union, not 2 + 2
     assert rows["__RARE__"]["description"] is None
     assert rows["__RARE__"]["modifier"] is None
     assert rows["__RARE__"]["is_masked"] is True
+
+
+def _add_shard(root: Path, rows: list[tuple]) -> None:
+    """Add a shard of (subject_id, time, code, modifier) events."""
+    schema = pq.read_schema(root / "data" / "0.parquet")
+    names = ("subject_id", "time", "code", "modifier")
+    table = pa.Table.from_pylist([dict(zip(names, row)) for row in rows], schema=schema)
+    pq.write_table(
+        table, root / "data" / f"{len(list((root / 'data').glob('*.parquet')))}.parquet"
+    )
+
+
+def test_is_static_marks_codes_whose_events_all_lack_a_time(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    # S: a static code (sex, say) for all three subjects. A gains one untimed
+    # event besides its timed ones, so it is not static.
+    _add_shard(
+        meds_dataset,
+        [(subject, None, "S", "main") for subject in (1, 2, 3)]
+        + [(1, None, "A", "main")],
+    )
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=3)
+    )
+    rows = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
+    assert rows["S"]["is_static"] is True and rows["S"]["subject_count"] == 3
+    assert rows["A"]["is_static"] is False and rows["A"]["event_count"] == 4
+    assert rows["__RARE__"]["is_static"] is None  # B and C pooled: no single answer
+    # Only the boolean is released, never a count of untimed events.
+    assert not any("timed" in name for name in pl.read_parquet_schema(output))
+
+
+def test_is_static_with_split_columns_and_numeric_stats(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    _add_shard(meds_dataset, [(subject, None, "S", "main") for subject in (1, 2, 3)])
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=2, split_columns=True, numeric_stats=("mean",)),
+    )
+    result = pl.read_parquet(output)
+    columns = result.columns
+    assert columns.index("is_static") < columns.index("numeric_count")
+    static = dict(zip(result["code"], result["is_static"]))
+    assert static["S"] is True and static["A"] is False
 
 
 def test_drop_and_rounding(meds_dataset: Path, tmp_path: Path) -> None:
@@ -422,9 +471,12 @@ _MODIFIER_METADATA = {
 
 
 def _write_modifier_dataset(
-    root: Path, metadata: list[dict], modifiers: list[str]
+    root: Path,
+    metadata: list[dict],
+    modifiers: list[str],
+    events: list[tuple] = _MODIFIER_EVENTS,
 ) -> None:
-    """Rewrite the fixture with ``_MODIFIER_EVENTS``, ``metadata`` and ``modifiers``."""
+    """Rewrite the fixture with ``events``, ``metadata`` and ``modifiers``."""
 
     event_schema = pa.schema(
         [
@@ -437,7 +489,7 @@ def _write_modifier_dataset(
     )
     for path in (root / "data").glob("*.parquet"):
         path.unlink()
-    for index, rows in enumerate((_MODIFIER_EVENTS[:4], _MODIFIER_EVENTS[4:])):
+    for index, rows in enumerate((events[:4], events[4:])):
         pq.write_table(
             pa.Table.from_pylist(
                 [
@@ -510,6 +562,7 @@ def test_code_metadata_keyed_by_any_declared_modifiers(
         "parent_codes",
         "event_count",
         "subject_count",
+        "is_static",
         "is_masked",
     ]
     assert result.schema["modifier"] == result.schema["unit"] == pl.String
@@ -572,4 +625,120 @@ def test_undeclared_metadata_modifier_is_an_ordinary_column(
         ("A", "alt", "label", 2),
         ("A", "main", "label", 3),
         ("B", "x", "label", 2),
+    ]
+
+
+# Two subjects each, with ``unit`` declared and only sometimes filled in the data,
+# as in MIMIC-IV: ``LAB`` has no unit in its events, but one in its metadata row.
+_UNIT_EVENTS = [
+    (subject, code, "-", unit)
+    for code, unit in [
+        ("G", "g"),
+        ("G", "mg"),
+        ("LAB", None),
+        ("M", None),
+        ("N", "x"),
+        ("W", "kg"),
+    ]
+    for subject in (1, 2)
+]
+
+
+def test_code_metadata_falls_back_to_the_codes_own_row(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    metadata = [
+        # A row with null modifiers describes every variant without its own row.
+        {"code": "G", "unit": None, "description": "G any"},
+        {"code": "G", "unit": "mg", "description": "G mg"},
+        # The only row of a code describes its variants without an exact match.
+        {"code": "LAB", "unit": "mg/dL", "description": "Lab"},
+        {"code": "W", "unit": None, "description": "Weight"},
+        # Several rows and none of them null: no row describes (M, null).
+        {"code": "M", "unit": "mg", "description": "M mg"},
+        {"code": "M", "unit": "g", "description": "M g"},
+    ]
+    _write_modifier_dataset(meds_dataset, metadata, ["unit"], _UNIT_EVENTS)
+
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+    )
+    result = pl.read_parquet(output)
+
+    assert result.columns == [
+        "code",
+        "unit",
+        "description",
+        "parent_codes",
+        "event_count",
+        "subject_count",
+        "is_static",
+        "is_masked",
+    ]
+    # Exact matches win; units still come from the counts.
+    assert result.select("code", "unit", "description", "parent_codes").rows() == [
+        ("G", "g", "G any", ["P/G"]),
+        ("G", "mg", "G mg", ["P/G"]),
+        ("LAB", None, "Lab", ["P/LAB"]),
+        ("M", None, None, None),
+        ("N", "x", None, None),
+        ("W", "kg", "Weight", ["P/W"]),
+    ]
+    assert result["subject_count"].to_list() == [2] * 6
+
+
+def test_fallback_code_metadata_rows_must_be_unique(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    metadata = [
+        {"code": "G", "unit": None, "description": "G any"},
+        {"code": "G", "unit": None, "description": "G again"},
+    ]
+    _write_modifier_dataset(meds_dataset, metadata, ["unit"], _UNIT_EVENTS)
+
+    with pytest.raises(ValueError, match=r"keys are not unique: \['code', 'unit'\]"):
+        summarize(
+            meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+        )
+
+
+@pytest.mark.parametrize(
+    ("unit_type", "units"),
+    [
+        # Older MEDS-Extract builds write every extra column as a list.
+        (pa.list_(pa.string()), [["g", "mg"], ["mg/dL"], None]),
+        # An all-null column may be written null-typed.
+        (pa.null(), [None, None, None]),
+    ],
+)
+def test_code_metadata_modifier_of_another_type(
+    meds_dataset: Path, tmp_path: Path, unit_type: pa.DataType, units: list
+) -> None:
+    _write_modifier_dataset(meds_dataset, [{"code": "G"}], ["unit"], _UNIT_EVENTS)
+    codes = ["G", "LAB", "W"]
+    pq.write_table(
+        pa.table(
+            {
+                "code": pa.array(codes),
+                "unit": pa.array(units, type=unit_type),
+                "description": pa.array([f"{code} name" for code in codes]),
+                "parent_codes": pa.array([[f"P/{code}"] for code in codes]),
+            }
+        ),
+        meds_dataset / "metadata" / "codes.parquet",
+    )
+
+    output = summarize(
+        meds_dataset, tmp_path / "summary.parquet", SummaryConfig(min_subjects=2)
+    )
+    result = pl.read_parquet(output)
+
+    assert result.schema["unit"] == pl.String
+    assert result.select("code", "unit", "description").rows() == [
+        ("G", "g", "G name"),
+        ("G", "mg", "G name"),
+        ("LAB", None, "LAB name"),
+        ("M", None, None),
+        ("N", "x", None),
+        ("W", "kg", "W name"),
     ]

@@ -25,7 +25,7 @@ from .scan import (
 )
 
 _COUNT_COLUMNS = ("event_count", "subject_count")
-_RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_masked", "split"}
+_RESERVED_COLUMNS = {*_COUNT_COLUMNS, "is_static", "is_masked", "split"}
 _NUMERIC_PARTIALS = (
     "_numeric_count",
     "_numeric_subjects",
@@ -57,8 +57,12 @@ def _code_occurrences(
     keys: Sequence[str],
     split_columns: Sequence[tuple[str, str, str]],
     numeric: bool = False,
+    timed: bool = False,
 ) -> pl.LazyFrame:
     expressions = _count_expressions(split_columns)
+    if timed:
+        # Timed events per cell; partitions add, and zero means the cell is static.
+        expressions.append(pl.col("_timed").sum().cast(pl.UInt64).alias("_timed_count"))
     if numeric:
         expressions.extend(_numeric_partial_expressions())
     if split_columns:
@@ -174,9 +178,10 @@ def _sink_partitioned_counts(
             keys,
             split_columns,
             numeric,
+            timed=True,
         ),
     )
-    names = [*_COUNT_COLUMNS, *_split_count_names(split_columns)]
+    names = [*_COUNT_COLUMNS, *_split_count_names(split_columns), "_timed_count"]
     if split_columns:
         names.append("_missing_split_count")
     # Subjects occur in exactly one hash partition, so exact subject counts add.
@@ -210,10 +215,10 @@ def summarize(
 
     metadata_json = read_dataset_metadata(root)
     modifiers = code_modifier_columns(metadata_json)
-    metadata = scan_code_metadata(root)
+    metadata, metadata_keys = _keyed_metadata(scan_code_metadata(root), modifiers)
     numeric_stats = config.numeric_stats
     _warn_extrema(numeric_stats)
-    events = scan_events(root, modifiers, numeric=bool(numeric_stats))
+    events = scan_events(root, modifiers, numeric=bool(numeric_stats), timed=True)
     splits = None
     scope: list[str] = []
     split_columns: list[tuple[str, str, str]] = []
@@ -235,11 +240,9 @@ def summarize(
             scope.append("split")
 
     count_keys = [*scope, "code", *modifiers]
-    # MEDS code metadata is keyed by code, plus any declared modifiers it has
-    # (MEDS-Extract writes code alone); its row applies to every variant of the rest.
-    metadata_schema = metadata.collect_schema()
-    metadata_keys = ["code", *(name for name in modifiers if name in metadata_schema)]
-    metadata_columns = _metadata_columns(metadata_schema, metadata_keys, modifiers)
+    metadata_columns = _metadata_columns(
+        metadata.collect_schema(), metadata_keys, modifiers
+    )
     split_count_names = _split_count_names(split_columns)
     numeric_columns = _numeric_columns(numeric_stats)
     token = uuid4().hex
@@ -280,7 +283,11 @@ def summarize(
                 missing_split,
                 "subject_splits does not cover every event subject",
             )
-        safe = counts.filter(pl.col("subject_count") >= config.min_subjects)
+        # Static: every event of the cell has a null time (MEDS's static
+        # measurements). Only this boolean is released, never the timed count.
+        safe = counts.filter(
+            pl.col("subject_count") >= config.min_subjects
+        ).with_columns((pl.col("_timed_count") == 0).alias("is_static"))
         if split_columns:
             safe = _mask_split_counts(safe, split_columns, config.min_split_subjects)
         if config.rare_code_action == "bucket":
@@ -290,9 +297,9 @@ def summarize(
                 f"rare_code_label already exists: {config.rare_code_label!r}",
             )
         if numeric_stats:
-            exact = None
+            exact_stats = None
             if {"median", "percentiles"} & set(numeric_stats):
-                exact = _sink_exact_statistics(
+                exact_stats = _sink_exact_statistics(
                     event_parts,
                     split_parts if config.per_split else None,
                     safe.select(count_keys),
@@ -305,26 +312,22 @@ def summarize(
                         else None
                     ),
                 )
-            safe = _numeric_statistics(safe, exact, count_keys, config)
-        metadata = metadata.join(
-            safe.select(metadata_keys),
-            on=metadata_keys,
-            how="semi",
-            nulls_equal=True,
+            safe = _numeric_statistics(safe, exact_stats, count_keys, config)
+        released_keys = safe.select(metadata_keys).unique()
+        exact = metadata.join(
+            released_keys, on=metadata_keys, how="semi", nulls_equal=True
         )
-        _validate_metadata(
-            metadata, metadata_keys, [*split_count_names, *numeric_columns]
-        )
+        _validate_metadata(exact, metadata_keys, [*split_count_names, *numeric_columns])
         # Modifier values always come from the counts, so each released row keeps
         # its own, whichever modifiers the metadata is keyed by.
-        common = safe.join(
-            metadata, on=metadata_keys, how="left", nulls_equal=True
-        ).with_columns(pl.lit(False).alias("is_masked"))
+        common = _join_metadata(safe, exact, metadata, released_keys, metadata_keys)
+        common = common.with_columns(pl.lit(False).alias("is_masked"))
         count_columns = [*_COUNT_COLUMNS, *split_count_names]
         columns = [
             *scope,
             *metadata_columns,
             *count_columns,
+            "is_static",
             *numeric_columns,
             "is_masked",
         ]
@@ -352,10 +355,13 @@ def summarize(
             )
             # Mixed-code values have no meaning, so the bucket carries none.
             bucket = bucket.with_columns(
-                pl.lit(
-                    None, dtype=pl.UInt64 if name == "numeric_count" else pl.Float64
-                ).alias(name)
-                for name in numeric_columns
+                pl.lit(None, dtype=pl.Boolean).alias("is_static"),
+                *(
+                    pl.lit(
+                        None, dtype=pl.UInt64 if name == "numeric_count" else pl.Float64
+                    ).alias(name)
+                    for name in numeric_columns
+                ),
             ).select(columns)
             frames.append(bucket)
 
@@ -364,11 +370,23 @@ def summarize(
         )
         if config.enrichment is not None:
             unenriched = result
-            result = _enrich(result, config.enrichment, stats)
+            # Parents that are codes of codes.parquet are in-dataset parents, even
+            # when the summary does not release them (a unit stem without events).
+            dataset_codes = frozenset(
+                metadata.select(pl.col("code").cast(pl.String))
+                .unique()
+                .drop_nulls()
+                .collect(engine="streaming")
+                .get_column("code")
+            )
+            result = _enrich(result, config.enrichment, stats, dataset_codes)
         sink_table(result, staged_path, format_)
         staged_path.replace(output)
         if verbose and config.enrichment is not None:
-            report = _coverage(unenriched), _coverage(scan_table(output))
+            report = (
+                _coverage(unenriched, dataset_codes=dataset_codes),
+                _coverage(scan_table(output), dataset_codes=dataset_codes),
+            )
     finally:
         counts_path.unlink(missing_ok=True)
         staged_path.unlink(missing_ok=True)
@@ -596,6 +614,95 @@ def _mask_split_counts(
         pl.when(pl.col(subject_name) >= min_subjects).then(name).alias(name)
         for _, event_name, subject_name in split_columns
         for name in (event_name, subject_name)
+    )
+
+
+def _keyed_metadata(
+    metadata: pl.LazyFrame, modifiers: Sequence[str]
+) -> tuple[pl.LazyFrame, list[str]]:
+    """The code metadata and its keys: code, plus the declared modifiers it has.
+
+    MEDS-Extract writes code metadata keyed by code alone, even with declared
+    modifiers; its row then applies to every variant of them. Data modifiers are
+    strings, so a modifier column of another scalar type is cast to one. A nested
+    one, such as the ``List(String)`` that older MEDS-Extract builds write for every
+    extra column, cannot be a key and is dropped: the counts give every row its
+    own modifier values anyway.
+    """
+
+    schema = metadata.collect_schema()
+    present = [name for name in modifiers if name in schema]
+    nested = [name for name in present if schema[name].is_nested()]
+    keys = [name for name in present if name not in nested]
+    metadata = metadata.drop(nested).with_columns(
+        pl.col(name).cast(pl.String) for name in keys if schema[name] != pl.String
+    )
+    return metadata, ["code", *keys]
+
+
+def _join_metadata(
+    safe: pl.LazyFrame,
+    exact: pl.LazyFrame,
+    metadata: pl.LazyFrame,
+    released_keys: pl.LazyFrame,
+    keys: Sequence[str],
+) -> pl.LazyFrame:
+    """Join each released row to its metadata row, falling back to the code's own.
+
+    Metadata keyed by code and modifiers matches exactly where it can. A released
+    row without an exact match, such as one whose modifier is null in the data
+    while the metadata row has a value, gets the code's row with null modifiers,
+    or else the code's only row. A code with several rows and none of them null
+    keeps null metadata on such a row: no single row describes it.
+    """
+
+    modifiers = list(keys[1:])
+    if not modifiers:
+        return safe.join(exact, on="code", how="left", nulls_equal=True)
+    marker = f"_metadata_match_{uuid4().hex}"
+    joined = safe.join(
+        exact.with_columns(pl.lit(True).alias(marker)),
+        on=list(keys),
+        how="left",
+        nulls_equal=True,
+    )
+    unmatched = (
+        released_keys.join(
+            metadata.select(keys), on=list(keys), how="anti", nulls_equal=True
+        )
+        .select("code")
+        .unique()
+    )
+    candidates = metadata.join(unmatched, on="code", how="semi").with_columns(
+        pl.all_horizontal(pl.col(name).is_null() for name in modifiers).alias(
+            f"{marker}_generic"
+        ),
+        pl.len().over("code").alias(f"{marker}_rows"),
+    )
+    generic = candidates.filter(pl.col(f"{marker}_generic"))
+    _raise_if_any(
+        generic.group_by("code").len().filter(pl.col("len") > 1).limit(1),
+        f"Code metadata keys are not unique: {list(keys)}",
+    )
+    only = candidates.filter(pl.col(f"{marker}_rows") == 1).join(
+        generic.select("code"), on="code", how="anti"
+    )
+    values = [
+        name for name in metadata.collect_schema().names() if name not in set(keys)
+    ]
+    fallback = pl.concat([generic, only]).select(
+        "code", *(pl.col(name).alias(f"{marker}_{name}") for name in values)
+    )
+    return (
+        joined.join(fallback, on="code", how="left")
+        .with_columns(
+            pl.when(pl.col(marker))
+            .then(pl.col(name))
+            .otherwise(pl.col(f"{marker}_{name}"))
+            .alias(name)
+            for name in values
+        )
+        .drop(marker, *(f"{marker}_{name}" for name in values))
     )
 
 
