@@ -105,15 +105,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--numeric-stats",
         nargs="?",
-        const="all",
+        const="default",
         metavar="STATS",
         help="summarize numeric_value per code; optional comma list of "
-        "min,max,mean,median,std,ci (default: all) or 'none'",
+        "min,max,mean,median,std,ci,percentiles, 'all' or 'none' (default: "
+        "mean,median,std,ci,percentiles). min and max each release one subject's "
+        "most extreme measurement and print a warning; prefer percentiles",
     )
     parser.add_argument(
         "--numeric-ci-level",
         type=float,
         help="confidence level for numeric_ci_* columns (default: 0.95)",
+    )
+    parser.add_argument(
+        "--numeric-percentile",
+        type=float,
+        metavar="Q",
+        help="lower percentile for numeric_p_lower; numeric_p_upper uses 1 - Q "
+        "(default: 0.05)",
     )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
@@ -153,6 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             round_counts_to=args.round_counts_to,
             numeric_stats=args.numeric_stats,
             numeric_ci_level=args.numeric_ci_level,
+            numeric_percentile=args.numeric_percentile,
             enrichment=_enrichment_from_args(args, config.enrichment),
         )
     except (OSError, ValueError) as exc:

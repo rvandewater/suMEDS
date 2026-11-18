@@ -10,7 +10,13 @@ import yaml
 
 from .ontology import DEFAULT_REF, OntologyRules, load_rules, registered_rules
 
-NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci")
+#: Every numeric statistic, in output column order.
+NUMERIC_STATS = ("min", "max", "mean", "median", "std", "ci", "percentiles")
+#: The statistics ``numeric_stats: true`` releases. ``min`` and ``max`` are left out: each
+#: is one subject's most extreme measurement, which the subject threshold does not protect.
+DEFAULT_NUMERIC_STATS = ("mean", "median", "std", "ci", "percentiles")
+#: Statistics that release a single subject's measurement; requesting them warns.
+EXTREMA_STATS = ("min", "max")
 _NUMERIC_ALIASES = {"avg": "mean"}
 _Config = TypeVar("_Config")
 
@@ -123,7 +129,12 @@ class SummaryConfig:
 
     ``min_subjects`` is evaluated on unique subjects, not event rows. A value
     of one disables useful rarity protection and should only be used on public
-    or synthetic data.
+    or synthetic data. ``numeric_stats=True`` releases
+    :data:`DEFAULT_NUMERIC_STATS`; ``min`` and ``max`` must be named (or ``"all"``
+    given), and a summary that releases them warns, since each is one subject's
+    measurement. ``percentiles`` are the safer bounds: ``numeric_percentile`` and
+    one minus it, each released only when at least ``min_subjects`` subjects lie
+    in the tail it bounds.
     """
 
     per_split: bool = False
@@ -136,6 +147,7 @@ class SummaryConfig:
     round_counts_to: int | None = None
     numeric_stats: tuple[str, ...] = ()
     numeric_ci_level: float = 0.95
+    numeric_percentile: float = 0.05
     enrichment: EnrichmentConfig | None = None
 
     def __post_init__(self) -> None:
@@ -146,6 +158,15 @@ class SummaryConfig:
             or not 0 < self.numeric_ci_level < 1
         ):
             raise ValueError("numeric_ci_level must be between 0 and 1")
+        if (
+            not isinstance(self.numeric_percentile, (int, float))
+            or isinstance(self.numeric_percentile, bool)
+            or not 0 < self.numeric_percentile < 0.5
+        ):
+            raise ValueError(
+                "numeric_percentile must be between 0 and 0.5 (exclusive), e.g. 0.05 "
+                "for the 5th and 95th percentiles"
+            )
         if self.enrichment is not None and not isinstance(
             self.enrichment, EnrichmentConfig
         ):
@@ -192,6 +213,7 @@ class SummaryConfig:
             "partitions",
             "numeric_stats",
             "numeric_ci_level",
+            "numeric_percentile",
         }
         privacy_options = {
             field.name
@@ -235,7 +257,7 @@ def _numeric_stats(value: Any) -> tuple[str, ...]:
     if value is None or value is False:
         return ()
     if value is True:
-        return NUMERIC_STATS
+        return DEFAULT_NUMERIC_STATS
     if isinstance(value, str):
         value = [item for item in value.split(",") if item.strip()]
     if not isinstance(value, (list, tuple)) or not all(
@@ -243,7 +265,9 @@ def _numeric_stats(value: Any) -> tuple[str, ...]:
     ):
         raise ValueError("numeric_stats must be true, false, or a list of names")
     names = [_NUMERIC_ALIASES.get(item.strip(), item.strip()) for item in value]
-    if names in (["all"], ["default"]):
+    if names == ["default"]:
+        return DEFAULT_NUMERIC_STATS
+    if names == ["all"]:
         return NUMERIC_STATS
     if names == ["none"]:
         return ()

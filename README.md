@@ -221,8 +221,11 @@ per split. `split_columns=True` keeps the total row and adds columns such as
 `event_count_train` and `subject_count_train` from `subject_splits.parquet`.
 Set `min_split_subjects` above 1 to suppress rare split-level cells.
 `numeric_stats=True` (CLI `--numeric-stats`) adds per-code `numeric_value`
-statistics: count, min, max, mean, median, std, and a confidence interval, or
-any subset such as `numeric_stats=["mean", "std"]`.
+statistics: count, mean, median, std, a confidence interval, and trimmed
+percentiles (5th and 95th by default, each released only when `min_subjects`
+subjects lie beyond it), or any subset such as `numeric_stats=["mean", "std"]`.
+`min` and `max` are opt-in and print a warning: each is one subject's most
+extreme measurement, which `min_subjects` does not protect.
 
 ## Documentation
 

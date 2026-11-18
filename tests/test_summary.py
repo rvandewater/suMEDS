@@ -291,11 +291,12 @@ def test_numeric_stats_are_exact_and_privacy_masked(
     meds_dataset: Path, tmp_path: Path
 ) -> None:
     _add_numeric_values(meds_dataset)
-    output = summarize(
-        meds_dataset,
-        tmp_path / "summary.parquet",
-        SummaryConfig(min_subjects=2, numeric_stats=True),
-    )
+    with pytest.warns(UserWarning, match="numeric_min and numeric_max release one"):
+        output = summarize(
+            meds_dataset,
+            tmp_path / "summary.parquet",
+            SummaryConfig(min_subjects=2, numeric_stats="all"),
+        )
     rows = {row["code"]: row for row in pl.read_parquet(output).to_dicts()}
 
     a = rows["A"]
@@ -316,11 +317,12 @@ def test_numeric_stats_selection_and_value_threshold(
     meds_dataset: Path, tmp_path: Path
 ) -> None:
     _add_numeric_values(meds_dataset)
-    output = summarize(
-        meds_dataset,
-        tmp_path / "summary.parquet",
-        SummaryConfig(min_subjects=3, numeric_stats=["avg", "min"]),
-    )
+    with pytest.warns(UserWarning, match="^numeric_min releases one"):
+        output = summarize(
+            meds_dataset,
+            tmp_path / "summary.parquet",
+            SummaryConfig(min_subjects=3, numeric_stats=["avg", "min"]),
+        )
     result = pl.read_parquet(output)
 
     assert [name for name in result.columns if name.startswith("numeric_")] == [
@@ -331,6 +333,80 @@ def test_numeric_stats_selection_and_value_threshold(
     # A is released (3 subjects) but only 2 subjects carry values.
     row = result.filter(pl.col("code") == "A").row(0, named=True)
     assert row["numeric_mean"] is None
+
+
+def _add_lab_values(root: Path, values: list[float]) -> None:
+    """A shard of code LAB: subject 100 + i has value values[i]."""
+
+    table = pa.Table.from_pylist(
+        [
+            {
+                "subject_id": 100 + index,
+                "time": datetime(2020, 1, 1),
+                "code": "LAB",
+                "modifier": None,
+                "numeric_value": value,
+            }
+            for index, value in enumerate(values)
+        ],
+        schema=pa.schema(
+            [
+                pa.field("subject_id", pa.int64(), nullable=False),
+                pa.field("time", pa.timestamp("us")),
+                pa.field("code", pa.string(), nullable=False),
+                pa.field("modifier", pa.string()),
+                pa.field("numeric_value", pa.float32()),
+            ]
+        ),
+    )
+    pq.write_table(table, root / "data" / "2.parquet")
+
+
+def test_numeric_stats_default_leaves_out_extrema(
+    meds_dataset: Path, tmp_path: Path, recwarn: pytest.WarningsRecorder
+) -> None:
+    # 39 ordinary values and one outlier, as with one unusually heavy patient.
+    _add_lab_values(meds_dataset, [*range(39), 1000.0])
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=5, numeric_stats=True, numeric_percentile=0.25),
+    )
+    assert not [w for w in recwarn if "numeric_min" in str(w.message)]
+    result = pl.read_parquet(output)
+    assert [name for name in result.columns if name.startswith("numeric_")] == [
+        "numeric_count",
+        "numeric_mean",
+        "numeric_median",
+        "numeric_std",
+        "numeric_ci_lower",
+        "numeric_ci_upper",
+        "numeric_p_lower",
+        "numeric_p_upper",
+    ]
+    lab = result.filter(pl.col("code") == "LAB").row(0, named=True)
+    # Linear interpolation at ranks 0.25 * 39 and 0.75 * 39; the outlier is not
+    # released, and each tail holds 10 subjects.
+    assert lab["numeric_p_lower"] == pytest.approx(9.75)
+    assert lab["numeric_p_upper"] == pytest.approx(29.25)
+    assert lab["numeric_median"] == pytest.approx(19.5)
+
+
+def test_percentiles_need_min_subjects_in_their_tail(
+    meds_dataset: Path, tmp_path: Path
+) -> None:
+    _add_lab_values(meds_dataset, [*range(39), 1000.0])
+    output = summarize(
+        meds_dataset,
+        tmp_path / "summary.parquet",
+        SummaryConfig(min_subjects=5, numeric_stats=["percentiles", "mean"]),
+    )
+    lab = pl.read_parquet(output).filter(pl.col("code") == "LAB").row(0, named=True)
+    # At the 5th and 95th percentiles each tail holds only 2 of the 40 subjects,
+    # so both bounds would come close to single people's values: suppressed.
+    assert lab["numeric_mean"] is not None
+    assert lab["numeric_p_lower"] is None
+    assert lab["numeric_p_upper"] is None
 
 
 def test_numeric_stats_without_numeric_column(
@@ -596,6 +672,7 @@ def test_code_metadata_falls_back_to_the_codes_own_row(
         "parent_codes",
         "event_count",
         "subject_count",
+        "is_static",
         "is_masked",
     ]
     # Exact matches win; units still come from the counts.
