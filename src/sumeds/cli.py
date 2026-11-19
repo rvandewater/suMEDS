@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shlex
 import sys
@@ -36,6 +37,7 @@ from .ontology import (
     registered_rules_path,
 )
 from .summary import summarize
+from .units import normalize_units_file
 
 ENRICH_PROG = "suMEDS-enrich"
 #: Options of the ``sumeds_enrich`` MEDS-Extract stage: the ``suMEDS-enrich`` options, with
@@ -298,6 +300,54 @@ def enrich_main(argv: Sequence[str] | None = None) -> int:
         _soft_fail(args, exc)
         return 0
     print(f"Wrote {output}")
+    return 0
+
+
+NORMALIZE_UNITS_PROG = "suMEDS-normalize-units"
+
+
+def normalize_units_main(argv: Sequence[str] | None = None) -> int:
+    """Normalise the unit spellings of a MEDS ``codes.parquet`` to UCUM; return an exit code.
+
+    The input is a MEDS dataset root (its ``metadata/codes.parquet`` is normalised in place) or a
+    ``codes.parquet`` file (in place, or to ``-o``). See :mod:`sumeds.units`.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog=NORMALIZE_UNITS_PROG,
+        description="Rewrite the unit column of a MEDS codes.parquet as canonical UCUM "
+        "codes, keeping the recorded spelling in unit_source_value; unknown spellings "
+        "are kept as they are.",
+    )
+    parser.add_argument(
+        "input", type=Path, help="a MEDS dataset root, or a codes.parquet file"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="where to write a codes.parquet given as input (default: in place)",
+    )
+    parser.add_argument("--version", action="version", version=version("suMEDS"))
+    args = parser.parse_args(argv)
+    if args.input.is_dir():
+        if args.output is not None:
+            parser.error(
+                "a MEDS dataset root is normalised in place; -o/--output is only for a file"
+            )
+        args.input = args.input / meds.code_metadata_filepath
+    if not args.input.is_file():
+        parser.error(f"{args.input} is not a file")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    try:
+        counts = normalize_units_file(args.input, args.output)
+    except Exception as exc:
+        parser.exit(1, f"{NORMALIZE_UNITS_PROG}: error: {exc}\n")
+    print(
+        f"Wrote {args.output or args.input}: {counts['rewritten']:,} of "
+        f"{counts['rows_with_unit']:,} units rewritten, "
+        f"{counts['unknown_kept']:,} unknown kept"
+    )
     return 0
 
 

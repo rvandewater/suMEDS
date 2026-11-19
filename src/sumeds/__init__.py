@@ -13,6 +13,7 @@ from .scan import (
     scan_subject_splits,
 )
 from .summary import code_occurrences, summarize
+from .units import normalize_units, normalize_units_file, to_ucum
 
 __all__ = [
     "EnrichmentConfig",
@@ -26,10 +27,13 @@ __all__ = [
     "enrich_metadata",
     "event_files",
     "load_rules",
+    "normalize_units",
+    "normalize_units_file",
     "read_dataset_metadata",
     "registered_rules",
     "scan_code_metadata",
     "scan_events",
     "scan_subject_splits",
     "summarize",
+    "to_ucum",
 ]

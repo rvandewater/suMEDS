@@ -32,6 +32,8 @@ jobs:
         run: |
           pip install -e ".[tests, polars, pandas]"
           pip install pytest pytest-cov --upgrade
+          # The UCUM validator of tests/test_units.py (Python >= 3.11; skipped otherwise).
+          pip install "ucumvert>=0.3.3; python_version >= '3.11'"
 
       - name: Check out the pinned ontology data release
         run: |
