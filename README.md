@@ -196,6 +196,30 @@ Identifiers Names and Codes (LOINC) Committee and is available at no cost under
 the license at http://loinc.org/license. LOINC® is a registered United States
 trademark of Regenstrief Institute, Inc.
 
+### Unit spellings (UCUM)
+
+MEDS ETLs write units as their sources spell them (`mg/dl`, `mg/dL`, `MG/DL`).
+The `sumeds_normalize_units` post-stage (or `suMEDS-normalize-units`) rewrites
+the `unit` column of `metadata/codes.parquet` as canonical, case-sensitive
+[UCUM](https://ucum.org/ucum) codes from one shared table, keeping each recorded
+spelling in `unit_source_value`. Codes are not changed. ETLs run it after their
+own unit stage and before `sumeds_enrich`:
+
+```yaml
+etl:
+  post_stages:
+    - <dataset>_unit_metadata
+    - sumeds_normalize_units
+    - sumeds_enrich: {rules: <dataset>}
+```
+
+A spelling is rewritten only when every part of it is known (`mcg/kg/min` is
+`ug/kg/min`, `°C` is `Cel`, `K/uL` is `10*9/L`); unknown spellings are kept and
+listed in the log. Case carries meaning (`G/l` is `10*9/L`, `g/l` is `g/L`), and
+words that do not say which unit they mean become annotations (`units` is
+`{units}`, `dose` is `{dose}`). `sumeds.to_ucum(spelling)` gives the mapping
+itself. See [Unit spellings](docs/units.md).
+
 ## Python API
 
 ```python

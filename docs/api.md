@@ -170,6 +170,31 @@ are necessarily eager because Polars provides no `scan_json` equivalent.
 [How enrichment works](enrichment.md) and [Athena enrichment](athena.md) for
 source and parsing details.
 
+### `to_ucum(spelling) -> str | None`
+
+The canonical UCUM code of a unit spelling, or `None` for an unknown spelling or
+a placeholder (`unknown`, `N/A`). See [Unit spellings](units.md).
+
+### `normalize_units`
+
+```python
+normalize_units(
+    df: polars.DataFrame,
+    column: str = "unit",
+) -> tuple[polars.DataFrame, dict]
+```
+
+Rewrites the known spellings of `column` (Strings or lists of Strings) as UCUM
+codes and keeps the recorded units in `unit_source_value`. The counts are
+`rows_with_unit`, `already_canonical`, `rewritten`, `unknown_kept`,
+`placeholder_kept`, and `unknown_spellings` (spelling to rows).
+
+### `normalize_units_file(input_path, output_path=None) -> dict`
+
+`normalize_units` on a MEDS `codes.parquet`, written atomically (in place by
+default), every other column with its Arrow type; what the
+`sumeds_normalize_units` stage and `suMEDS-normalize-units` run.
+
 ## Lazy building blocks
 
 ### `scan_events(root, modifiers=()) -> polars.LazyFrame`
