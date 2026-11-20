@@ -12,6 +12,8 @@ A third promise is about the codes themselves: a code whose last component is a 
 unit stripped of surrounding whitespace, and ``UNK`` where the row records none or a blank one,
 while the ``unit`` metadata stays the raw column. ``UnitComponentContract`` finds those codes in
 the spec and evaluates them with dftly, as MEDS-Extract does; the subclass names only the spec.
+With ``require_unit_in_code = True`` it also checks that every unit the row records is in the
+code, the policy of MIMIC-IV, ALOTT and HiRID (:func:`check_units_in_code`).
 
 .. code-block:: python
 
@@ -86,6 +88,7 @@ __all__ = [
     "UNIT_PROBES",
     "UnitComponent",
     "UnitComponentContract",
+    "check_units_in_code",
     "find_unit_components",
 ]
 
@@ -797,6 +800,134 @@ def find_unit_components(
     return found, undecided
 
 
+#: The units a row-unit column takes while :func:`check_units_in_code` asks whether the code gives
+#: the unit: :data:`UNIT_PROBES`, another case of ``mg`` (units are case-sensitive) and another unit.
+_CODE_UNIT_PROBES: tuple[str | None, ...] = (*UNIT_PROBES, "MG", "kg")
+
+#: :func:`check_units_in_code` verdicts that pass.
+IN_CODE, FIXED, DERIVED, IGNORED = "in code", "fixed", "derived", "ignored"
+#: :func:`check_units_in_code` verdicts that fail.
+NOT_IN_CODE, UNDECIDED = "not in code", "undecided"
+
+
+def _stripped(unit: Any) -> str | None:
+    """A unit as MEDS-Extract compares it in ``codes.parquet``: stripped, a blank one dropped."""
+    return None if unit is None else (str(unit).strip() or None)
+
+
+def check_units_in_code(
+    spec: Mapping[str, Any],
+    *,
+    dummy_values: Mapping[str, Any] | None = None,
+    unit_events: Mapping[str, str] | None = None,
+    ignored_events: Collection[str] = (),
+    components: Sequence[UnitComponent] | None = None,
+) -> dict[str, tuple[str, str]]:
+    """Whether each event's code gives the unit its ``_metadata._self.unit`` reads from the row.
+
+    The policy of an ETL whose every code has one unit by construction (MIMIC-IV, ALOTT, HiRID).
+    Returns ``{"table/event": (verdict, detail)}`` for every event with a ``_self.unit``:
+
+    - ``"in code"``: the code ends in the unit column (:func:`find_unit_components` finds it), so
+      :class:`UnitComponentContract`'s per-event checks verify the stripping helper;
+    - ``"fixed"``: the unit reads no column (``'kg'``);
+    - ``"derived"``: the code reads every column the unit reads, and with each such column set to
+      the probes ``mg``, `` mg``, ``mg ``, ``\\tmg\\n``, ``mL / h``, blank, missing, ``MG`` and
+      ``kg`` (every other column a dummy), no code gets two units (compared stripped, as
+      MEDS-Extract does). A unit extracted from a label the code carries
+      (``f"FLOWSHEET//{$label}"``, MIMIC-IV's ``omr``) or chosen by a column the code carries
+      passes, wherever in the code the column is;
+    - ``"ignored"``: ``ignored_events`` names it;
+    - ``"not in code"`` (fails): the code does not read a column the unit reads, or reads it but
+      loses the unit (only in a condition, case-folded, ...), so one code can carry several units;
+    - ``"undecided"`` (fails): the code or the unit could not be evaluated on the probes, or no
+      probe gives a code (set ``dummy_values`` for a code condition).
+
+    A unit from an external metadata table (another ``_metadata`` prefix, one row per item) is not
+    the row's and is not checked. ``components`` is :func:`find_unit_components`'s result when the
+    caller has it already.
+    """
+
+    parser = _parser()
+    dummy_values = dict(dummy_values or {})
+    if components is None:
+        components = find_unit_components(
+            spec,
+            dummy_values=dummy_values,
+            unit_events=unit_events,
+            ignored_events=ignored_events,
+        )[0]
+    in_code = {c.id: c.column for c in components if c.unit is not None}
+    verdicts: dict[str, tuple[str, str]] = {}
+    for table_name, block in _tables(spec):
+        table = _Table(block, parser)
+        for name, event in _events(block):
+            unit = _unit_exprs(event).get("_self")
+            if unit is None:
+                continue
+            event_id = f"{table_name}/{name}"
+            if event_id in ignored_events:
+                verdicts[event_id] = (IGNORED, "listed in ignored_events")
+            elif event_id in in_code:
+                verdicts[event_id] = (IN_CODE, f"the code ends in ${in_code[event_id]}")
+            else:
+                verdicts[event_id] = _code_gives_the_unit(
+                    table, event["code"], unit, dummy_values
+                )
+    return verdicts
+
+
+def _code_gives_the_unit(
+    table: _Table, code_text: str, unit_text: Any, dummy_values: Mapping[str, Any]
+) -> tuple[str, str]:
+    """The verdict on an event whose code does not end in its unit column."""
+    try:
+        code, unit = table.parser(code_text), table.parser(unit_text)
+    except Exception as error:  # noqa: BLE001 - reported, with the event
+        return UNDECIDED, f"{type(error).__name__}: {error}"
+    columns = sorted(table.closure(unit)[1])
+    if not columns:
+        return FIXED, f"the unit is the constant {unit_text}"
+    missing = [c for c in columns if c not in table.closure(code)[1]]
+    if missing:
+        return NOT_IN_CODE, (
+            f"the unit {unit_text} reads ${', $'.join(missing)}, which the code does not"
+        )
+    for column in columns:
+        try:
+            frame = table.evaluate(
+                {"code": code, "unit": unit},
+                column,
+                list(_CODE_UNIT_PROBES),
+                dummy_values,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, with the event
+            return UNDECIDED, f"{type(error).__name__}: {error}"
+        units: dict[str, set[str | None]] = {}
+        for value, row_unit in zip(
+            frame["code"].to_list(), frame["unit"].to_list(), strict=True
+        ):
+            if value is not None:
+                units.setdefault(value, set()).add(_stripped(row_unit))
+        if not units:
+            return UNDECIDED, (
+                f"no probe of ${column} gives a code; set dummy_values for the columns of the "
+                "code's condition"
+            )
+        for value, found in units.items():
+            if len(found) > 1:
+                shown = sorted(found, key=lambda u: (u is None, u or ""))
+                return NOT_IN_CODE, (
+                    f"the code {value!r} gets the units {shown} from ${column} "
+                    f"(unit {unit_text})"
+                )
+    carried = " and ".join(f"${c}" for c in columns)
+    return (
+        DERIVED,
+        f"the code carries {carried}, which {'give' if len(columns) > 1 else 'gives'} the unit",
+    )
+
+
 class UnitComponentContract:
     """A code ending in a unit carries it stripped, and ``UNK`` where it is missing or blank.
 
@@ -816,7 +947,12 @@ class UnitComponentContract:
     - ``unit_events``: ``{"table/event": raw unit column}`` for events discovery cannot decide;
     - ``ignored_events``: ``table/event`` ids to leave out;
     - ``dummy_values``: ``{column: value}`` for columns a code needs a particular value of (a
-      condition such as ``$count == 1``); every other column is ``"1"``.
+      condition such as ``$count == 1``); every other column is ``"1"``;
+    - ``require_unit_in_code``: ``True`` for an ETL whose every code has one unit by construction
+      (MIMIC-IV, ALOTT, HiRID): each event whose ``_metadata._self.unit`` reads a row column must
+      end its code in that unit, unless the code gives the unit otherwise; see
+      :func:`check_units_in_code`. ``ignored_events`` (a list, or a dict of reasons) leaves events
+      out of this check too.
     """
 
     spec: ClassVar[str | Path | Mapping[str, Any]]
@@ -824,6 +960,7 @@ class UnitComponentContract:
     unit_events: ClassVar[Mapping[str, str]] = {}
     ignored_events: ClassVar[Collection[str]] = ()
     dummy_values: ClassVar[Mapping[str, Any]] = {}
+    require_unit_in_code: ClassVar[bool] = False
 
     @classmethod
     def load_spec(cls) -> Mapping[str, Any]:
@@ -885,6 +1022,35 @@ class UnitComponentContract:
             assert found == sorted(self.expected_unit_events)
         else:
             assert found, "no code in the spec ends in a unit column"
+
+    def test_row_units_are_in_the_code(self):
+        """With ``require_unit_in_code``: an event whose ``_self.unit`` reads a row column ends its
+        code in that unit (fixed units, units the code gives otherwise and ``ignored_events``
+        aside), so every code has one unit by construction."""
+        if not self.require_unit_in_code:
+            pytest.skip("require_unit_in_code is off")
+        verdicts = check_units_in_code(
+            self.load_spec(),
+            dummy_values=self.dummy_values,
+            ignored_events=self.ignored_events,
+            components=self.discover()[0],
+        )
+        failing = {
+            event_id: detail
+            for event_id, (verdict, detail) in verdicts.items()
+            if verdict in (NOT_IN_CODE, UNDECIDED)
+        }
+        assert not failing, (
+            "these events read their unit from the row, but their code does not carry it, so "
+            "one code can have several units:\n"
+            + "\n".join(
+                f"  {event_id}: {detail}" for event_id, detail in failing.items()
+            )
+            + "\nEnd each code in its unit through a `_table.cols` helper that strips it, such "
+            "as `_value_unit: '(extract /(?s)\\S(?:.*\\S)?/ from $unit) ?? \"UNK\"'` and "
+            '`code: f"...//{$_value_unit}"`, or list the event in `ignored_events` with the '
+            'reason (`ignored_events = {"table/event": "why"}`).'
+        )
 
     def test_no_code_ends_in_a_raw_unit_column(self):
         """A code must not end in the unit column as recorded: `` mg`` and ``mg`` would be two codes."""

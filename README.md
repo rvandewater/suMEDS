@@ -252,7 +252,10 @@ under `strict`). An ETL subclasses them and sets its rules name, packs and
 expected parents. `UnitComponentContract` needs only the spec's name: it finds
 every code whose last component is a unit and checks, with dftly, that the unit
 is stripped, that a blank or missing one gives `UNK`, and that the `unit`
-metadata stays the raw column. See [Testing an ETL](docs/testing.md).
+metadata stays the raw column. With `require_unit_in_code = True`, an ETL whose
+every code has one unit by construction (MIMIC-IV, ALOTT, HiRID) also checks
+that each event reading its unit from the row ends its code in that unit. See
+[Testing an ETL](docs/testing.md).
 
 ## Python API
 

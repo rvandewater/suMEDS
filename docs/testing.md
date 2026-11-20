@@ -240,3 +240,52 @@ spec's own expressions with dftly as MEDS-Extract does (the helpers first, in
 | `unit_events` | `{"table/event": "raw unit column"}` for events discovery misses |
 | `ignored_events` | `table/event` ids to leave out |
 | `dummy_values` | `{column: value}` where a code needs a particular value to evaluate, such as `$count > 0` (`{"count": 1}`) |
+| `require_unit_in_code` | `True` to require that every row unit is in the code; see below (default `False`) |
+
+### Every row unit in the code
+
+Some ETLs put the unit in the code wherever a row records one, so every code
+has one unit by construction: MIMIC-IV, ALOTT and HiRID. Such an ETL opts in:
+
+```python
+class TestUnitComponents(UnitComponentContract):
+    spec = "MIMIC-IV"
+    require_unit_in_code = True
+```
+
+`test_row_units_are_in_the_code` then checks every event whose
+`_metadata._self.unit` reads a column of the row. Its code must end in that
+unit; discovery finds it as a unit component, and the checks above verify its
+stripping helper. The test passes over:
+
+- a **fixed** unit, which reads no column (MIMIC-IV's
+  `SUBJECT_WEIGHT_AT_INFUSION` with `'kg'`);
+- a unit **derived** from what the code carries. The code reads every column
+  the unit reads, and no code gets two units when each such column takes the
+  probes above plus `MG` and `kg` (units compared stripped, as in
+  `codes.parquet`). MIMIC-IV's `omr`, whose unit is extracted from
+  `result_name`, and the code is `result_name`, passes. So does MC-MED's
+  `VITAL//{$Measure}//{$Source}`, whose unit is chosen by `Measure`;
+- a unit from an **external** metadata table (another `_metadata` prefix, such
+  as HiRID's `hirid_variable_reference`): one row per item, so one unit per
+  code already;
+- an event in `ignored_events`, a list or a dict of reasons:
+  `ignored_events = {"table/event": "why"}`. Such an event is also left out of
+  the unit-component checks.
+
+It fails, naming the event and why, when the code does not read a column the
+unit reads (`f"LAB//{$itemid}"` with `unit: $valueuom`), or reads it but loses
+the unit (only in a condition, or case-folded), so one code can carry several
+units. The message says what to do: end the code in the unit through a
+stripping helper, or list the event in `ignored_events` with the reason. An
+event no probe gives a code for (a code condition the dummy `"1"` fails) also
+fails, until `dummy_values` makes the condition hold.
+
+Where the code carries the column matters only for the unit component: the
+derived case does not ask for the unit column in a non-final component, since
+MIMIC-IV's `omr` code and eICU's `INTAKE_OUTPUT//{$cellpath}` carry the
+column their unit comes from as their last component.
+
+`check_units_in_code(spec)` returns the verdict on every such event
+(`in code`, `fixed`, `derived`, `ignored`, `not in code`, `undecided`), to
+see which events an ETL would have to change before it opts in.
