@@ -16,6 +16,7 @@ Options are stage keys, as for ``sumeds_enrich``::
             unknown_unit_components: [UNK]
             link_unknown_units: true
             link_single_units: false
+            unknown_unit_prefixes: []
             stem_description: without_unit
             description_unit_pattern: '\\s[(\\[]([^()\\[\\]]+)[)\\]]\\s*$'
             description_units: [cm, kg, mL]
@@ -23,7 +24,8 @@ Options are stage keys, as for ``sumeds_enrich``::
 
 Codes sharing a stem with one another (``LAB//<item>//mg/dL``, ``LAB//<item>//mmol/L``) get the stem
 as a parent, and the stem a row of its own (:mod:`sumeds.unit_siblings`); with
-``link_single_units``, so does a code ending in its unit without such a sibling. Without a ``unit`` column
+``link_single_units``, so does a code ending in its unit without such a sibling, and with
+``unknown_unit_prefixes`` also a code ending in ``UNK`` under one of those prefixes. Without a ``unit`` column
 the file is left as it is, and running the stage twice changes nothing. The stage is registered in
 the ``MEDS_transforms.stages`` entry-point group; without MEDS-Transforms this module imports, but
 registers nothing.
@@ -44,6 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "unknown_unit_components": list(DEFAULT_UNKNOWN_UNIT_COMPONENTS),
     "link_unknown_units": True,
     "link_single_units": False,
+    "unknown_unit_prefixes": [],
     "stem_description": "without_unit",
     "description_unit_pattern": None,
     "description_units": None,
@@ -58,15 +61,16 @@ def stage_options(stage_cfg: Any) -> dict[str, Any]:
     >>> stage_options(SimpleNamespace(unknown_unit_components=("UNK", "NA"), fill_units="never"))
     ... # doctest: +NORMALIZE_WHITESPACE
     {'unknown_unit_components': ['UNK', 'NA'], 'link_unknown_units': True,
-     'link_single_units': False, 'stem_description': 'without_unit',
-     'description_unit_pattern': None, 'description_units': None, 'fill_units': 'never'}
+     'link_single_units': False, 'unknown_unit_prefixes': [],
+     'stem_description': 'without_unit', 'description_unit_pattern': None, 'description_units': None, 'fill_units': 'never'}
     """
 
     options = {}
     for name, default in DEFAULT_CONFIG.items():
         value = getattr(stage_cfg, name, default)
         if (
-            name in ("unknown_unit_components", "description_units")
+            name
+            in ("unknown_unit_components", "unknown_unit_prefixes", "description_units")
             and value is not None
         ):
             value = [str(v) for v in value]

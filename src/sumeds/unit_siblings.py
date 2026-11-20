@@ -24,6 +24,10 @@ as one item:
   unit is the stem's (``stem_description="without_unit"``). A code ending in an unknown-unit
   component is never linked on its own, as two such codes alone are no group: its last component
   says nothing about which unit, or whether a unit, is meant.
+- ``unknown_unit_prefixes`` (with ``link_single_units``) names the code families where such a code
+  is a unit placeholder after all: a code ending in an unknown-unit component whose stem starts
+  with one of these prefixes is linked to its stem also without a real-unit sibling. Its stem row
+  takes that code's parents (or those every such code shares).
 
 A description may state its code's unit (``description_unit_pattern``, a regular expression whose
 group ``unit``, or else group 1, is the unit). Such a unit fills a missing ``unit``
@@ -62,6 +66,23 @@ With ``link_single_units``, a code with a real unit and no sibling gets its stem
 ('LAB//K', 'Potassium', None, None)
 >>> counts["sibling_groups"], counts["single_unit_codes"], counts["stem_rows_added"]
 (1, 1, 2)
+
+A lone ``UNK`` code gets its stem only under one of ``unknown_unit_prefixes``:
+
+>>> starts = pl.DataFrame({
+...     "code": ["INFUSION//START//7//UNK", "GENDER//UNK"],
+...     "unit": [None, None],
+... })
+>>> out, counts = link_unit_siblings(
+...     starts, link_single_units=True, unknown_unit_prefixes=["INFUSION//START//"]
+... )
+>>> for row in out.rows():
+...     print(row)
+('INFUSION//START//7//UNK', None, ['INFUSION//START//7'])
+('GENDER//UNK', None, None)
+('INFUSION//START//7', None, None)
+>>> counts["unknown_unit_prefix_codes"], counts["single_unit_codes"]
+(1, 0)
 """
 
 from __future__ import annotations
@@ -111,6 +132,7 @@ COUNT_KEYS = (
     "stem_rows_added",
     "stem_rows_existing",
     "single_unit_codes",
+    "unknown_unit_prefix_codes",
     "description_units",
     "description_units_rejected",
     "description_units_filled",
@@ -230,6 +252,7 @@ def _plan(
     unknown_unit_components: frozenset[str],
     link_unknown_units: bool,
     link_single_units: bool,
+    unknown_unit_prefixes: tuple[str, ...],
     stem_description: str,
     description_unit_pattern: re.Pattern[str] | None,
     description_units: frozenset[str] | None,
@@ -303,25 +326,36 @@ def _plan(
     for i, stem in enumerate(stems):
         if stem is not None:
             groups.setdefault(stem, []).append(i)
-    # A group needs a code with a real unit: codes ending in `UNK` alone are never one. A single
-    # code is a group only with `link_single_units`.
+    # A group needs a code with a real unit: codes ending in `UNK` alone are never one, except
+    # under `unknown_unit_prefixes` (which needs `link_single_units`). A single code is a group
+    # only with `link_single_units`.
     min_codes = 1 if link_single_units else 2
     groups = {
         stem: members
         for stem, members in groups.items()
         if len({codes[i] for i in members}) >= min_codes
-        and any(real[i] for i in members)
+        and (any(real[i] for i in members) or stem.startswith(unknown_unit_prefixes))
     }
     single = {
         stem
         for stem, members in groups.items()
         if len({codes[i] for i in members}) == 1
     }
-    counts["sibling_groups"] = len(groups) - len(single)
+    unknown_only = {
+        stem for stem, members in groups.items() if not any(real[i] for i in members)
+    }
+    counts["sibling_groups"] = len(groups) - len(single | unknown_only)
     counts["sibling_codes"] = sum(
-        len(members) for stem, members in groups.items() if stem not in single
+        len(members)
+        for stem, members in groups.items()
+        if stem not in single | unknown_only
     )
-    counts["single_unit_codes"] = sum(len(groups[stem]) for stem in single)
+    counts["single_unit_codes"] = sum(
+        len(groups[stem]) for stem in single - unknown_only
+    )
+    counts["unknown_unit_prefix_codes"] = sum(
+        len(groups[stem]) for stem in unknown_only
+    )
 
     # 3. Each sibling gets its stem as a parent.
     new_parents = None if parents is None else list(parents)
@@ -354,11 +388,11 @@ def _plan(
             )
         if new_parents is not None:
             # Only siblings with a real unit decide the stem's parents: an `UNK` sibling is linked
-            # to the stem but must not drop a parent the real-unit siblings share.
+            # to the stem but must not drop a parent the real-unit siblings share. Under
+            # `unknown_unit_prefixes`, a stem without a real-unit code takes its codes' parents.
+            deciding = [i for i in members if real[i]] or members
             lists = [
-                [p for p in _string_list(new_parents[i]) if p != stem]
-                for i in members
-                if real[i]
+                [p for p in _string_list(new_parents[i]) if p != stem] for i in deciding
             ]
             shared = [
                 p
@@ -423,6 +457,7 @@ def _resolve(
     unknown_unit_components: Iterable[str] = DEFAULT_UNKNOWN_UNIT_COMPONENTS,
     link_unknown_units: bool = True,
     link_single_units: bool = False,
+    unknown_unit_prefixes: Iterable[str] | None = (),
     stem_description: str = "without_unit",
     description_unit_pattern: str | re.Pattern[str] | None = None,
     description_units: Iterable[str] | None = None,
@@ -436,14 +471,34 @@ def _resolve(
         )
     if fill_units not in _FILL_UNITS:
         raise ValueError(f"fill_units must be one of {_FILL_UNITS}, not {fill_units!r}")
-    if isinstance(unknown_unit_components, str) or isinstance(description_units, str):
+    if any(
+        isinstance(value, str)
+        for value in (unknown_unit_components, description_units, unknown_unit_prefixes)
+    ):
         raise TypeError(
-            "unknown_unit_components and description_units are lists of strings"
+            "unknown_unit_components, unknown_unit_prefixes and description_units are lists "
+            "of strings"
         )
+    prefixes = tuple(dict.fromkeys(str(p) for p in unknown_unit_prefixes or ()))
+    if prefixes:
+        if (
+            not link_single_units
+            or not link_unknown_units
+            or not unknown_unit_components
+        ):
+            raise ValueError(
+                "unknown_unit_prefixes needs link_single_units: true, link_unknown_units: true "
+                "and unknown_unit_components"
+            )
+        if not all(p.strip() for p in prefixes):
+            raise ValueError(
+                "unknown_unit_prefixes must not be blank: a blank prefix matches every code"
+            )
     return {
         "unknown_unit_components": frozenset(unknown_unit_components or ()),
         "link_unknown_units": bool(link_unknown_units),
         "link_single_units": bool(link_single_units),
+        "unknown_unit_prefixes": prefixes,
         "stem_description": stem_description,
         "description_unit_pattern": _compile(description_unit_pattern),
         "description_units": None
@@ -459,6 +514,7 @@ def link_unit_siblings(
     unknown_unit_components: Iterable[str] = DEFAULT_UNKNOWN_UNIT_COMPONENTS,
     link_unknown_units: bool = True,
     link_single_units: bool = False,
+    unknown_unit_prefixes: Iterable[str] | None = (),
     stem_description: StemDescription = "without_unit",
     description_unit_pattern: str | re.Pattern[str] | None = None,
     description_units: Iterable[str] | None = None,
@@ -480,7 +536,14 @@ def link_unit_siblings(
         link_single_units: Whether a unit-suffixed code with a real unit and no sibling is linked
             to its stem too (and the stem gets a row), so that every code ending in its unit has
             its unit-free stem as a parent. A code ending in one of ``unknown_unit_components``
-            is still linked only with a real-unit sibling. ``False`` (default): only siblings are.
+            is still linked only with a real-unit sibling, unless ``unknown_unit_prefixes`` names
+            its family. ``False`` (default): only siblings are.
+        unknown_unit_prefixes: Code prefixes under which a code ending in one of
+            ``unknown_unit_components`` is linked to its stem also without a real-unit sibling: one
+            whose stem starts with a listed prefix (``INFUSION//START//`` links
+            ``INFUSION//START//7//UNK`` but not ``INFUSION//START//UNK``). Such a stem's row
+            takes its codes' parents. Needs ``link_single_units`` and ``link_unknown_units``;
+            empty (default): no such code is linked alone.
         stem_description: ``"shared"``: a stem row gets the siblings' description only if they all
             have the same one. ``"without_unit"`` (default): if they differ, each sibling's
             description without its unit (the span ``description_unit_pattern`` matches, else the
@@ -506,6 +569,7 @@ def link_unit_siblings(
         unknown_unit_components,
         link_unknown_units,
         link_single_units,
+        unknown_unit_prefixes,
         stem_description,
         description_unit_pattern,
         description_units,
@@ -703,6 +767,12 @@ def _log_counts(counts: dict[str, int], path: Path) -> None:
             "Of these, %s codes ending in their unit have no sibling and got their stem as a "
             "parent (link_single_units)",
             f"{counts['single_unit_codes']:,}",
+        )
+    if counts["unknown_unit_prefix_codes"]:
+        logger.info(
+            "Of these, %s codes ending in an unknown-unit component have no real-unit sibling and "
+            "got their stem as a parent (unknown_unit_prefixes)",
+            f"{counts['unknown_unit_prefix_codes']:,}",
         )
     if counts["description_units"] or counts["description_units_rejected"]:
         logger.info(

@@ -396,6 +396,15 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
         help="also give a code ending in its (recorded) unit its stem when it has no sibling",
     )
     parser.add_argument(
+        "--unknown-unit-prefix",
+        dest="unknown_unit_prefixes",
+        action="append",
+        metavar="PREFIX",
+        help="with --link-single-units: also give a code ending in an unknown-unit component "
+        "its stem when it has no real-unit sibling, if the stem starts with PREFIX "
+        "(repeatable; e.g. INFUSION//START//)",
+    )
+    parser.add_argument(
         "--stem-description",
         choices=["shared", "without_unit"],
         default="without_unit",
@@ -446,6 +455,7 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
             args.output,
             unknown_unit_components=unknown,
             link_single_units=args.link_single_units,
+            unknown_unit_prefixes=args.unknown_unit_prefixes,
             stem_description=args.stem_description,
             description_unit_pattern=args.description_unit_pattern,
             description_units=args.description_units,
@@ -459,6 +469,12 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
         + (
             f"{counts['single_unit_codes']:,} codes without a sibling, "
             if args.link_single_units
+            else ""
+        )
+        + (
+            f"{counts['unknown_unit_prefix_codes']:,} unknown-unit codes under "
+            "--unknown-unit-prefix, "
+            if args.unknown_unit_prefixes
             else ""
         )
         + f"{counts['stem_rows_added']:,} stem rows added"

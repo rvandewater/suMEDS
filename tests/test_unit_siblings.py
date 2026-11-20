@@ -544,6 +544,111 @@ def test_single_unit_codes_after_normalize_units() -> None:
     assert _rows(out)["X//a"]["description"] == "a"
 
 
+def test_a_lone_unknown_unit_code_gets_its_stem_under_unknown_unit_prefixes() -> None:
+    """Under a listed prefix, `X//UNK` alone gets its stem; elsewhere it still does not."""
+    df = _frame(
+        [
+            ("GENDER//UNK", "Gender unknown", None),
+            ("I//END//7//mL", "End 7 (mL)", "mL"),
+            ("I//START//7//UNK", "Start 7", None, ["ATC//B05", "I//START//7"]),
+            ("I//START//8//UNK", "Start 8 (UNK)", None, ["ATC//B05"]),
+            ("I//START//9//UNK", "Start 9", None),
+            ("I//START//9//mL/h", "Start 9 (mL/h)", "mL/h", ["ATC//B05"]),
+            ("I//START//UNK", "Start", None),  # the stem would be the prefix's parent
+            ("M//START//a//UNK", "a", None),  # not a listed prefix
+        ]
+    )
+    prefixes = ["I//START//", "I//END//"]
+    out, counts = link_unit_siblings(
+        df, link_single_units=True, unknown_unit_prefixes=prefixes
+    )
+    rows = _rows(out)
+    assert rows["I//START//7//UNK"]["parent_codes"] == ["ATC//B05", "I//START//7"]
+    assert rows["I//START//7"] == {
+        "code": "I//START//7",
+        "description": "Start 7",
+        "unit": None,
+        "parent_codes": ["ATC//B05"],  # the code's own, the stem left out
+    }
+    assert rows["I//START//8//UNK"]["parent_codes"] == ["ATC//B05", "I//START//8"]
+    assert rows["I//START//8"]["description"] == "Start 8"  # `UNK` removed
+    # A real-unit sibling: a sibling group as before, and only it decides the stem's parents.
+    assert rows["I//START//9//UNK"]["parent_codes"] == ["I//START//9"]
+    assert rows["I//START//9"]["parent_codes"] == ["ATC//B05"]
+    assert rows["I//END//7//mL"]["parent_codes"] == ["I//END//7"]
+    for code in ("GENDER//UNK", "I//START//UNK", "M//START//a//UNK"):
+        assert rows[code]["parent_codes"] is None
+    assert not {"GENDER", "I//START", "M//START//a"} & rows.keys()
+    assert counts["unknown_unit_prefix_codes"] == 2
+    assert counts["single_unit_codes"] == 1
+    assert counts["sibling_groups"] == 1 and counts["sibling_codes"] == 2
+    assert counts["stem_rows_added"] == 4  # I//START//7, 8, 9 and I//END//7
+    again, counts = link_unit_siblings(
+        out, link_single_units=True, unknown_unit_prefixes=prefixes
+    )
+    assert again.equals(out) and counts["stem_rows_existing"] == 4
+
+    # Without the prefixes, the lone `UNK` starts stay as they are.
+    off, counts = link_unit_siblings(df, link_single_units=True)
+    assert _rows(off)["I//START//8//UNK"]["parent_codes"] == ["ATC//B05"]
+    assert counts["unknown_unit_prefix_codes"] == 0
+
+
+def test_unknown_unit_codes_alone_under_a_prefix_share_their_stem() -> None:
+    """Two unknown-unit spellings with no real-unit code: linked together, sharing parents."""
+    df = _frame(
+        [
+            ("I//START//7//UNK", "Start 7", None, ["ATC//B05", "ATC//B"]),
+            ("I//START//7//NA", "Start 7", None, ["ATC//B"]),
+        ]
+    )
+    out, counts = link_unit_siblings(
+        df,
+        unknown_unit_components=["UNK", "NA"],
+        link_single_units=True,
+        unknown_unit_prefixes=["I//START//"],
+    )
+    rows = _rows(out)
+    assert rows["I//START//7"]["parent_codes"] == ["ATC//B"]
+    assert rows["I//START//7"]["description"] == "Start 7"
+    assert counts["unknown_unit_prefix_codes"] == 2
+    assert counts["sibling_groups"] == 0 and counts["single_unit_codes"] == 0
+
+
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        ({"unknown_unit_prefixes": ["I//START//"]}, ValueError),  # no link_single_units
+        (
+            {
+                "unknown_unit_prefixes": ["I//START//"],
+                "link_single_units": True,
+                "link_unknown_units": False,
+            },
+            ValueError,
+        ),
+        (
+            {
+                "unknown_unit_prefixes": ["I//START//"],
+                "link_single_units": True,
+                "unknown_unit_components": [],
+            },
+            ValueError,
+        ),
+        ({"unknown_unit_prefixes": [" "], "link_single_units": True}, ValueError),
+        ({"unknown_unit_prefixes": "I//START//", "link_single_units": True}, TypeError),
+    ],
+)
+def test_unknown_unit_prefixes_need_single_and_unknown_linking(
+    options: dict, error: type[Exception]
+) -> None:
+    df = _frame([("I//START//7//UNK", "Start 7", None)])
+    with pytest.raises(error):
+        link_unit_siblings(df, **options)
+    with pytest.raises(error):
+        link_unit_siblings_file("unused.parquet", **options)
+
+
 # ------------------------------------------------------------------ file and stage
 
 _MAP = pa.map_(pa.string(), pa.string())
@@ -751,6 +856,21 @@ def test_the_stage_passes_its_options(tmp_path: Path) -> None:
     assert rows["VITAL//T"]["parent_codes"] == []  # `Cel` is not a component
     assert rows["LAB//NA//mEq/L"]["parent_codes"] == ["LOINC//2951-2", "LAB//NA"]
 
+    table = _codes_table()
+    table = table.set_column(
+        0,
+        "code",
+        pa.array(["DX//UNK", "I//START//7//UNK", *table["code"].to_pylist()[2:]]),
+    )
+    root = _meds_root(tmp_path / "prefixes", table)
+    _main(_cfg(root, link_single_units=True, unknown_unit_prefixes=("I//START//",)))
+    rows = {
+        r["code"]: r
+        for r in pq.read_table(root / meds.code_metadata_filepath).to_pylist()
+    }
+    assert rows["I//START//7//UNK"]["parent_codes"][-1] == "I//START//7"
+    assert "I//START//7" in rows and "DX" not in rows
+
 
 def test_stage_options_fill_defaults() -> None:
     assert stage_options(SimpleNamespace()) == DEFAULT_CONFIG
@@ -832,11 +952,46 @@ def test_the_cli(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         "X//b",
         "X//b//g",
     ]
+    pq.write_table(
+        pa.table(
+            {
+                "code": ["X//a//mg", "X//b//UNK", "Y//UNK"],
+                "unit": ["mg", None, None],
+                "description": ["a", "b", "y"],
+            }
+        ),
+        codes,
+    )
+    assert (
+        link_unit_siblings_main(
+            [
+                str(codes),
+                "-o",
+                str(out),
+                "--link-single-units",
+                "--unknown-unit-prefix",
+                "X//",
+            ]
+        )
+        == 0
+    )
+    assert (
+        "1 codes without a sibling, 1 unknown-unit codes under --unknown-unit-prefix, "
+        "2 stem rows added" in capsys.readouterr().out
+    )
+    assert pq.read_table(out).column("code").to_pylist() == [
+        "X//a",
+        "X//a//mg",
+        "X//b",
+        "X//b//UNK",
+        "Y//UNK",
+    ]
     pq.write_table(_codes_table(), codes)
     for bad in (
         [str(root), "-o", str(out)],
         [str(tmp_path / "missing")],
         [str(codes), "--no-unknown-unit-components", "--unknown-unit-component", "X"],
+        [str(codes), "-o", str(out), "--unknown-unit-prefix", "LAB//"],
     ):
         with pytest.raises(SystemExit):
             link_unit_siblings_main(bad)

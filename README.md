@@ -232,6 +232,9 @@ the description and parents its siblings share, and no unit. A code ending in
 `link_single_units: true`, every code that ends in its unit gets its stem, also
 when its item has a single unit (for families whose codes always end in their
 unit, such as interval starts and ends that pair by their unit-free stem).
+`unknown_unit_prefixes` (with `link_single_units`) does the same for a lone
+`UNK` code in the listed families (`INFUSION//START//<item>//UNK`), where `UNK`
+stands for an unrecorded unit and not for an unknown value (`GENDER//UNK`).
 Options cover how stem descriptions are chosen and units stated in
 descriptions; it replaces the ETL-local `<dataset>_unit_metadata` stages. See
 [Unit siblings](docs/unit_siblings.md).
