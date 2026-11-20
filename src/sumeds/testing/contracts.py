@@ -8,9 +8,14 @@ soft-fails without packs, can be retried with ``suMEDS-enrich``, and fails the r
 sets class attributes for what differs: the rules name, its synthetic packs, and the codes and
 parents it expects.
 
+A third promise is about the codes themselves: a code whose last component is a unit carries that
+unit stripped of surrounding whitespace, and ``UNK`` where the row records none or a blank one,
+while the ``unit`` metadata stays the raw column. ``UnitComponentContract`` finds those codes in
+the spec and evaluates them with dftly, as MEDS-Extract does; the subclass names only the spec.
+
 .. code-block:: python
 
-    from sumeds.testing.contracts import EnrichmentContract, RulesContract
+    from sumeds.testing.contracts import EnrichmentContract, RulesContract, UnitComponentContract
 
     class TestRules(RulesContract):
         rules_name = "ALOTT"
@@ -23,6 +28,9 @@ parents it expects.
             "DIAGNOSIS//ICD//10//I50.23": ["ICD10CM//I50.23", "ICD10CM//I50.2", "ICD10CM//I50"]
         }
 
+    class TestUnitComponents(UnitComponentContract):
+        spec = "ALOTT"
+
 ``EnrichmentContract`` needs a ``raw_dir`` fixture (scope ``class`` or wider) with the synthetic
 raw input of the ETL, and MEDS-Extract installed. Every subclass test can be extended or
 overridden like any pytest test, and the fixtures (``plain_output``, ``enriched_output``,
@@ -30,12 +38,14 @@ overridden like any pytest test, and the fixtures (``plain_output``, ``enriched_
 build the suite already makes.
 
 This module imports pytest, so it is only for test suites; the helpers it uses are in
-:mod:`sumeds.testing`.
+:mod:`sumeds.testing`. ``UnitComponentContract`` also needs dftly (``sumeds[testing]``, or
+MEDS-Extract, which depends on it), imported when its tests run.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -70,7 +80,14 @@ from . import (
     write_ontology_source,
 )
 
-__all__ = ["EnrichmentContract", "RulesContract"]
+__all__ = [
+    "EnrichmentContract",
+    "RulesContract",
+    "UNIT_PROBES",
+    "UnitComponent",
+    "UnitComponentContract",
+    "find_unit_components",
+]
 
 
 class RulesContract:
@@ -527,3 +544,404 @@ class EnrichmentContract:
         record = dataset_metadata(output_dir)[DATASET_RECORD_KEY]
         assert record["enriched"] is False
         assert "not in the ontology cache" in record["error"]
+
+
+# ---------------------------------------------------------------------------------- unit components
+
+#: The units each code is evaluated on: a clean one, the same one with surrounding whitespace, one
+#: with inner spaces, blank ones and a missing one.
+UNIT_PROBES: tuple[str | None, ...] = (
+    "mg",
+    " mg",
+    "mg ",
+    "\tmg\n",
+    "mL / h",
+    "  ",
+    "",
+    None,
+)
+
+#: The value a unit column takes while discovery looks for it at the end of a code.
+_SENTINEL = "UNITPROBE"
+#: The value every other column a code reads takes, unless ``dummy_values`` names one.
+_DUMMY = "1"
+#: Top-level spec keys that are not tables (MEDS-Extract's reserved sections and global defaults).
+_NOT_TABLES = frozenset({"etl", "sources", "_defaults"})
+
+
+def _expected_component(unit: str | None) -> str:
+    """A unit as the last component of a code: stripped, and ``UNK`` when missing or blank."""
+    return (unit or "").strip() or "UNK"
+
+
+@dataclass(frozen=True)
+class UnitComponent:
+    """An event whose code ends in a unit: ``table/event`` reads it from the raw ``column``.
+
+    ``helpers`` are the ``_table.cols`` entries the code reads the column through (empty when the
+    code reads the column itself). ``unit`` is the event's ``_metadata._self.unit`` expression when
+    it reads that column, else ``None``.
+    """
+
+    table: str
+    event: str
+    column: str
+    helpers: tuple[str, ...] = ()
+    unit: Any = None
+    code: Any = field(default=None, compare=False)
+    scope: _Table | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def id(self) -> str:
+        """``table/event``, as MEDS-Extract names a source block."""
+        return f"{self.table}/{self.event}"
+
+
+def _parser() -> Any:
+    try:
+        from dftly import Parser
+    except ImportError as error:  # pragma: no cover - dftly comes with MEDS-Extract
+        raise ImportError(
+            "UnitComponentContract evaluates the spec with dftly: install sumeds[testing] or "
+            "MEDS-Extract"
+        ) from error
+    return Parser()
+
+
+def _tables(spec: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
+    for name, block in spec.items():
+        if (
+            name not in _NOT_TABLES
+            and not str(name).startswith("_")
+            and isinstance(block, Mapping)
+        ):
+            yield str(name), block
+
+
+def _events(block: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
+    for name, event in block.items():
+        if (
+            not str(name).startswith("_")
+            and isinstance(event, Mapping)
+            and "code" in event
+        ):
+            yield str(name), event
+
+
+class _Table:
+    """One table's ``_table.cols`` helpers, parsed, to evaluate an event's expressions."""
+
+    def __init__(self, block: Mapping[str, Any], parser: Any):
+        self.parser = parser
+        raw = ((block.get("_table") or {}).get("cols")) or {}
+        self.cols = {name: parser(expr) for name, expr in raw.items()}
+
+    def closure(self, node: Any) -> tuple[tuple[str, ...], frozenset[str]]:
+        """The helpers ``node`` reads (in ``_table.cols`` order) and the raw columns under them."""
+        helpers, raw, todo = set(), set(), list(node.referenced_columns)
+        while todo:
+            name = todo.pop()
+            if name in self.cols:
+                if name not in helpers:
+                    helpers.add(name)
+                    todo.extend(self.cols[name].referenced_columns)
+            else:
+                raw.add(name)
+        return tuple(h for h in self.cols if h in helpers), frozenset(raw)
+
+    def helpers_reading(self, node: Any, column: str) -> tuple[str, ...]:
+        """The helpers of ``node`` whose value depends on the raw ``column``."""
+        helpers, _ = self.closure(node)
+        return tuple(h for h in helpers if column in self.closure(self.cols[h])[1])
+
+    def evaluate(
+        self,
+        nodes: Mapping[str, Any],
+        column: str,
+        units: Sequence[str | None],
+        dummy_values: Mapping[str, Any],
+    ) -> pl.DataFrame:
+        """``nodes`` over rows whose ``column`` takes ``units`` and every other column a dummy.
+
+        The helpers the nodes read are added first, one ``with_columns`` each in ``_table.cols``
+        order, as MEDS-Extract prepares a table.
+        """
+        helpers, raw = set(), set()
+        for node in nodes.values():
+            h, r = self.closure(node)
+            helpers |= set(h)
+            raw |= r
+        n = len(units)
+        frame = pl.DataFrame(
+            {
+                column: pl.Series(column, list(units), dtype=pl.String),
+                **{
+                    name: [dummy_values.get(name, _DUMMY)] * n
+                    for name in sorted(raw - {column})
+                },
+            }
+        )
+        for name, node in self.cols.items():
+            if name in helpers:
+                frame = frame.with_columns(node.polars_expr.alias(name))
+        return frame.select(**{name: node.polars_expr for name, node in nodes.items()})
+
+
+def _unit_exprs(event: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``unit`` expression of each ``_metadata`` block of an event, by metadata prefix."""
+    metadata = event.get("_metadata") or {}
+    return {
+        prefix: block["unit"]
+        for prefix, block in metadata.items()
+        if isinstance(block, Mapping) and block.get("unit") is not None
+    }
+
+
+def find_unit_components(
+    spec: Mapping[str, Any],
+    *,
+    dummy_values: Mapping[str, Any] | None = None,
+    unit_events: Mapping[str, str] | None = None,
+    ignored_events: Collection[str] = (),
+) -> tuple[list[UnitComponent], dict[str, str]]:
+    """The events of a MEDS-Extract spec whose code ends in a unit, and the events it cannot decide.
+
+    A table's unit columns are the raw columns its events' ``_metadata`` ``unit`` expressions read
+    (``_self`` or another metadata prefix). An event's code ends in a unit when, with a unit column
+    set to a probe value and every other column to a dummy, the code ends in ``//`` and that
+    value, and the code reads the column through a ``_table.cols`` helper, or reads it itself while
+    a ``_self.unit`` expression of the table passes it through unchanged. So
+    ``f"LAB//{$item}//{$_value_unit}"`` counts, while ``f"INTAKE_OUTPUT//{$cellpath}"`` with a
+    unit extracted from inside ``cellpath`` does not.
+
+    ``unit_events`` adds ``{"table/event": raw unit column}`` that discovery misses, and
+    ``ignored_events`` drops ``table/event`` ids. ``dummy_values`` sets the value of other columns
+    a code reads (default ``"1"``). Events whose code fails to evaluate are returned, with the
+    error, as undecided.
+    """
+
+    parser = _parser()
+    dummy_values = dict(dummy_values or {})
+    extra = dict(unit_events or {})
+    forced = set(extra)
+    found: list[UnitComponent] = []
+    undecided: dict[str, str] = {}
+    for table_name, block in _tables(spec):
+        table = _Table(block, parser)
+        events = dict(_events(block))
+        units = {
+            name: {prefix: parser(expr) for prefix, expr in _unit_exprs(event).items()}
+            for name, event in events.items()
+        }
+        unit_columns: set[str] = set()
+        for exprs in units.values():
+            for node in exprs.values():
+                unit_columns |= table.closure(node)[1]
+        # Columns that some `_self.unit` of the table passes through unchanged.
+        passed: set[str] = set()
+        for exprs in units.values():
+            node = exprs.get("_self")
+            for column in sorted(table.closure(node)[1]) if node is not None else ():
+                try:
+                    value = table.evaluate(
+                        {"u": node}, column, [_SENTINEL], dummy_values
+                    )["u"][0]
+                except Exception:  # noqa: BLE001 - not passed through, as far as discovery can tell
+                    continue
+                if value == _SENTINEL:
+                    passed.add(column)
+        for name, event in events.items():
+            event_id = f"{table_name}/{name}"
+            if event_id in ignored_events:
+                continue
+            code = parser(event["code"])
+            _, reads = table.closure(code)
+            columns = sorted(reads & unit_columns)
+            if event_id in extra:
+                columns = [extra.pop(event_id)]
+            for column in columns:
+                helpers = table.helpers_reading(code, column)
+                if event_id not in forced and not (helpers or column in passed):
+                    continue
+                try:
+                    value = table.evaluate(
+                        {"code": code}, column, [_SENTINEL], dummy_values
+                    )["code"][0]
+                except Exception as error:  # noqa: BLE001 - reported, with the event, as undecided
+                    undecided[event_id] = f"{type(error).__name__}: {error}"
+                    continue
+                if event_id not in forced and not (
+                    isinstance(value, str) and value.endswith(f"//{_SENTINEL}")
+                ):
+                    continue
+                self_unit = units[name].get("_self")
+                reads_column = (
+                    self_unit is not None and column in table.closure(self_unit)[1]
+                )
+                found.append(
+                    UnitComponent(
+                        table=table_name,
+                        event=name,
+                        column=column,
+                        helpers=helpers,
+                        unit=event["_metadata"]["_self"]["unit"]
+                        if reads_column
+                        else None,
+                        code=event["code"],
+                        scope=table,
+                    )
+                )
+                break
+    for event_id in extra:
+        undecided[event_id] = "unit_events names an event the spec does not have"
+    return found, undecided
+
+
+class UnitComponentContract:
+    """A code ending in a unit carries it stripped, and ``UNK`` where it is missing or blank.
+
+    MEDS-Extract compares units stripped and drops blank ones when it writes ``codes.parquet``. A
+    code that kept the whitespace would split one unit over several codes (`` mg``, ``mg``,
+    ``mg ``), and a blank unit would give a code ending in whitespace (or in ``//``) with no unit.
+    So an ETL builds the unit component with a ``_table.cols`` helper such as
+    ``_value_unit: '(extract /(?s)\\S(?:.*\\S)?/ from $valueuom) ?? "UNK"'`` and keeps
+    ``_metadata._self.unit`` the raw column.
+
+    Set ``spec``: the name the ETL registers its spec under (``MEDS_extract.pipelines``), a path to
+    the spec, or the parsed spec. :func:`find_unit_components` finds the events whose code ends in
+    a unit; each is evaluated with dftly on :data:`UNIT_PROBES`, every other column a code reads
+    taking a dummy value. Optional:
+
+    - ``expected_unit_events``: the ``table/event`` ids discovery must find, to pin it;
+    - ``unit_events``: ``{"table/event": raw unit column}`` for events discovery cannot decide;
+    - ``ignored_events``: ``table/event`` ids to leave out;
+    - ``dummy_values``: ``{column: value}`` for columns a code needs a particular value of (a
+      condition such as ``$count == 1``); every other column is ``"1"``.
+    """
+
+    spec: ClassVar[str | Path | Mapping[str, Any]]
+    expected_unit_events: ClassVar[Collection[str] | None] = None
+    unit_events: ClassVar[Mapping[str, str]] = {}
+    ignored_events: ClassVar[Collection[str]] = ()
+    dummy_values: ClassVar[Mapping[str, Any]] = {}
+
+    @classmethod
+    def load_spec(cls) -> Mapping[str, Any]:
+        """The spec: parsed already, a path to a YAML file, or a registered name."""
+        spec = cls.spec
+        if isinstance(spec, Mapping):
+            return spec
+        if isinstance(spec, Path) or str(spec).endswith((".yaml", ".yml")):
+            return yaml.safe_load(Path(spec).read_text())
+        return load_spec(str(spec))
+
+    @classmethod
+    def discover(cls) -> tuple[list[UnitComponent], dict[str, str]]:
+        """:func:`find_unit_components` over the spec, once per class."""
+        cached = cls.__dict__.get("_discovered")
+        if cached is None:
+            cached = find_unit_components(
+                cls.load_spec(),
+                dummy_values=cls.dummy_values,
+                unit_events=cls.unit_events,
+                ignored_events=cls.ignored_events,
+            )
+            cls._discovered = cached
+        return cached
+
+    def pytest_generate_tests(self, metafunc: pytest.Metafunc) -> None:
+        """One test per event, named ``table/event``, so a failure names the event."""
+        if "unit_component" not in metafunc.fixturenames:
+            return
+        try:
+            components, _ = self.discover()
+        except (
+            ImportError
+        ) as error:  # no dftly: the contract's other tests fail with the reason
+            metafunc.parametrize(
+                "unit_component",
+                [pytest.param(None, marks=pytest.mark.skip(reason=str(error)))],
+            )
+            return
+        if metafunc.function.__name__ == "test_unit_metadata_stays_the_raw_column":
+            components = [c for c in components if c.unit is not None]
+        metafunc.parametrize(
+            "unit_component",
+            [pytest.param(c, id=c.id) for c in components]
+            or [pytest.param(None, marks=pytest.mark.skip(reason="no such event"))],
+        )
+
+    # ------------------------------------------------------------------ tests
+
+    def test_unit_components_are_found(self):
+        """Every event discovery cannot evaluate is reported; ``expected_unit_events`` pins the rest."""
+        components, undecided = self.discover()
+        assert not undecided, (
+            "cannot tell whether these codes end in a unit; set dummy_values, unit_events or "
+            f"ignored_events: {undecided}"
+        )
+        found = sorted(c.id for c in components)
+        if self.expected_unit_events is not None:
+            assert found == sorted(self.expected_unit_events)
+        else:
+            assert found, "no code in the spec ends in a unit column"
+
+    def test_no_code_ends_in_a_raw_unit_column(self):
+        """A code must not end in the unit column as recorded: `` mg`` and ``mg`` would be two codes."""
+        raw = []
+        for component in self.discover()[0]:
+            table = component.scope
+            probe = f" {_SENTINEL} "
+            code = table.evaluate(
+                {"code": table.parser(component.code)},
+                component.column,
+                [probe],
+                self.dummy_values,
+            )["code"][0]
+            if isinstance(code, str) and code.endswith(f"//{probe}"):
+                raw.append(component.id)
+        assert not raw, (
+            f"these codes end in their raw unit column: {raw}. Build the component with a "
+            "`_table.cols` helper such as "
+            "`_value_unit: '(extract /(?s)\\S(?:.*\\S)?/ from $unit) ?? \"UNK\"'`"
+        )
+
+    def test_unit_component_is_stripped_and_blank_is_unk(
+        self, unit_component: UnitComponent
+    ):
+        component = unit_component
+        table = component.scope
+        code = table.parser(component.code)
+        units = list(UNIT_PROBES)
+        stem = table.evaluate(
+            {"code": code}, component.column, [_SENTINEL], self.dummy_values
+        )["code"][0]
+        assert isinstance(stem, str) and stem.endswith(_SENTINEL), (component.id, stem)
+        stem = stem[: -len(_SENTINEL)]
+        codes = table.evaluate(
+            {"code": code}, component.column, units, self.dummy_values
+        )["code"].to_list()
+        expected = [stem + _expected_component(unit) for unit in units]
+        assert codes == expected, (
+            f"{component.id}: {dict(zip(units, codes, strict=True))}"
+        )
+
+    def test_unit_metadata_stays_the_raw_column(self, unit_component: UnitComponent):
+        """``_self.unit`` keeps the unit as recorded (a blank one may be left out): MEDS-Extract
+        strips it and drops a blank one when it writes ``codes.parquet``."""
+        component = unit_component
+        table = component.scope
+        units = list(UNIT_PROBES)
+        values = table.evaluate(
+            {"unit": table.parser(component.unit)},
+            component.column,
+            units,
+            self.dummy_values,
+        )["unit"].to_list()
+        for unit, value in zip(units, values, strict=True):
+            if unit is not None and unit.strip():
+                assert value == unit, f"{component.id}: unit {unit!r} became {value!r}"
+            else:
+                assert value in (unit, None), (
+                    f"{component.id}: unit {unit!r} became {value!r}"
+                )

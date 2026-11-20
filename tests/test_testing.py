@@ -14,10 +14,12 @@ import os
 import sys
 from collections.abc import Iterator
 from importlib.metadata import entry_points
+from importlib.util import find_spec
 from pathlib import Path
 
 import polars as pl
 import pytest
+import yaml
 
 from sumeds import EnrichmentConfig, OntologyPacks, enrich_metadata, load_rules
 from sumeds.testing import (
@@ -30,7 +32,12 @@ from sumeds.testing import (
     synthetic_title,
     write_ontology_source,
 )
-from sumeds.testing.contracts import EnrichmentContract, RulesContract
+from sumeds.testing.contracts import (
+    EnrichmentContract,
+    RulesContract,
+    UnitComponentContract,
+    find_unit_components,
+)
 
 # ------------------------------------------------------------------ the local ontology source
 
@@ -355,3 +362,233 @@ class TestEnrichmentContract(EnrichmentContract):
         for name, text in RAW.items():
             (raw / name).write_text(text)
         return raw
+
+
+# ------------------------------------------------------------------ the unit component contract
+
+_needs_dftly = pytest.mark.skipif(
+    find_spec("dftly") is None,
+    reason="UnitComponentContract needs dftly (Python >= 3.11)",
+)
+
+STRIP_OR_UNK = '(extract /(?s)\\S(?:.*\\S)?/ from ${column}) ?? "UNK"'
+
+#: A spec with each shape discovery has to decide: units through a helper (with and without
+#: `_self.unit`, read from `_self` or from an external metadata table, under a code condition),
+#: a unit extracted from inside a label, constant units, and codes without a unit.
+UNIT_SPEC = {
+    "etl": {"dataset_name": "CONTRACT"},
+    "_defaults": {"subject_id": "$patient_id"},
+    "labs": {
+        "_table": {"cols": {"_value_unit": STRIP_OR_UNK.format(column="unit")}},
+        "lab_drawn": {
+            "code": "f\"LAB//DRAWN//{$name ?? 'UNK'}//{$_value_unit}\"",
+            "time": "$t",
+        },
+        "lab_result": {
+            "code": "f\"LAB//{$name ?? 'UNK'}//{$_value_unit}\" if /\\S/ in $value",
+            "time": "$t",
+            "numeric_value": "$value::?float64",
+            "_metadata": {
+                "_self": {"description": "$name", "unit": '$unit if $unit != ""'}
+            },
+        },
+        "lab_priority": {
+            "code": "f\"LAB//PRIORITY//{$priority ?? 'UNK'}\"",
+            "time": "$t",
+        },
+    },
+    "drugs": {
+        "_table": {
+            "cols": {
+                "drug_name": {"column": "Drug Name"},
+                "_dose_unit": STRIP_OR_UNK.format(column="`Dose Unit`"),
+            }
+        },
+        "dose": {
+            "code": 'f"DRUG//{$drug_name ?? $drug_id::str}//{$_dose_unit}"',
+            "time": "$t",
+            "_metadata": {
+                "drug_reference": {
+                    "drug_id": "$id",
+                    "unit": "$`Dose Unit` if $kind == 'drug'",
+                }
+            },
+        },
+    },
+    "flowsheet": {
+        "row": {
+            "code": 'f"FLOWSHEET//{$label}"',
+            "time": "$t",
+            "_metadata": {
+                "_self": {"unit": "extract group 1 of /\\(([^)]+)\\)$/ from $label"}
+            },
+        },
+    },
+    "patients": {
+        "weight": {
+            "code": '"WEIGHT" if $weight == $weight',
+            "time": None,
+            "_metadata": {"_self": {"unit": '"kg"'}},
+        },
+        "gender": {"code": "f\"GENDER//{$gender ?? 'UNK'}\"", "time": None},
+    },
+}
+
+UNIT_EVENTS = ["drugs/dose", "labs/lab_drawn", "labs/lab_result"]
+
+
+def _with(spec: dict, table: str, event: str | None = None, **changes) -> dict:
+    """A copy of ``spec`` with ``changes`` to one event (or, without ``event``, to ``_table.cols``)."""
+    import copy
+
+    spec = copy.deepcopy(spec)
+    if event is None:
+        spec[table]["_table"]["cols"].update(changes)
+    else:
+        spec[table][event].update(changes)
+    return spec
+
+
+def _contract(spec, **attributes) -> type[UnitComponentContract]:
+    return type("Contract", (UnitComponentContract,), {"spec": spec, **attributes})
+
+
+def _run(contract: type[UnitComponentContract], test: str) -> None:
+    """Run one contract test over every event it is parametrized with."""
+    instance = contract()
+    if test in {
+        "test_unit_component_is_stripped_and_blank_is_unk",
+        "test_unit_metadata_stays_the_raw_column",
+    }:
+        components = contract.discover()[0]
+        if test == "test_unit_metadata_stays_the_raw_column":
+            components = [c for c in components if c.unit is not None]
+        for component in components:
+            getattr(instance, test)(component)
+    else:
+        getattr(instance, test)()
+
+
+@_needs_dftly
+class TestUnitComponentContract(UnitComponentContract):
+    spec = UNIT_SPEC
+    expected_unit_events = UNIT_EVENTS
+
+
+@_needs_dftly
+def test_discovery_decides_each_shape() -> None:
+    found, undecided = find_unit_components(UNIT_SPEC)
+    assert undecided == {}
+    assert {c.id: (c.column, c.helpers) for c in found} == {
+        "labs/lab_drawn": ("unit", ("_value_unit",)),
+        "labs/lab_result": ("unit", ("_value_unit",)),
+        "drugs/dose": ("Dose Unit", ("_dose_unit",)),
+    }
+    units = {c.id: c.unit for c in found}
+    # Only `_self.unit` is evaluated over the event's own rows; an external block is not.
+    assert units == {
+        "labs/lab_drawn": None,
+        "labs/lab_result": '$unit if $unit != ""',
+        "drugs/dose": None,
+    }
+
+
+@_needs_dftly
+def test_the_contract_reads_a_spec_file_or_a_registered_name(tmp_path: Path) -> None:
+    path = tmp_path / "messy.yaml"
+    path.write_text(yaml.safe_dump(UNIT_SPEC))
+    for spec in (path, str(path)):
+        assert _contract(spec).load_spec() == UNIT_SPEC
+    assert _contract("CONTRACT").load_spec() == load_spec("CONTRACT")
+
+
+@_needs_dftly
+def test_a_raw_unit_column_at_the_end_of_a_code_fails() -> None:
+    """What a new ETL gets for free: a code that ends in the unit as recorded is named."""
+    spec = _with(UNIT_SPEC, "labs", "lab_result", code='f"LAB//{$name}//{$unit}"')
+    contract = _contract(spec)
+    assert {c.id for c in contract.discover()[0]} == set(UNIT_EVENTS)
+    with pytest.raises(
+        AssertionError, match=r"end in their raw unit column: \['labs/lab_result'\]"
+    ):
+        _run(contract, "test_no_code_ends_in_a_raw_unit_column")
+    with pytest.raises(AssertionError, match="labs/lab_result"):
+        _run(contract, "test_unit_component_is_stripped_and_blank_is_unk")
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        '$unit ?? "UNK"',  # not stripped
+        '(extract /\\S+/ from $unit) ?? "UNK"',  # loses the inner spaces of `mL / h`
+        "extract /(?s)\\S(?:.*\\S)?/ from $unit",  # a blank unit stays null, not `UNK`
+    ],
+)
+@_needs_dftly
+def test_a_helper_that_does_not_strip_or_fill_fails(helper: str) -> None:
+    contract = _contract(_with(UNIT_SPEC, "labs", _value_unit=helper))
+    with pytest.raises(AssertionError, match="labs/lab_drawn"):
+        _run(contract, "test_unit_component_is_stripped_and_blank_is_unk")
+
+
+@_needs_dftly
+def test_a_stripped_unit_metadata_fails() -> None:
+    """``_self.unit`` must stay the raw column; MEDS-Extract strips it when it writes ``codes.parquet``."""
+    for unit in ("$_value_unit", "extract /(?s)\\S(?:.*\\S)?/ from $unit"):
+        spec = _with(UNIT_SPEC, "labs", "lab_result")
+        spec["labs"]["lab_result"]["_metadata"]["_self"]["unit"] = unit
+        contract = _contract(spec)
+        with pytest.raises(
+            AssertionError, match="labs/lab_result: unit ' mg' became 'mg'"
+        ):
+            _run(contract, "test_unit_metadata_stays_the_raw_column")
+
+
+@_needs_dftly
+def test_overrides_and_undecided_events() -> None:
+    # A code condition on a number cannot be evaluated on the dummy string, until a dummy is given.
+    spec = _with(
+        UNIT_SPEC,
+        "labs",
+        "lab_drawn",
+        code='f"LAB//DRAWN//{$name}//{$_value_unit}" if $count > 0',
+    )
+    _, undecided = find_unit_components(spec)
+    assert list(undecided) == ["labs/lab_drawn"]
+    contract = _contract(spec)
+    with pytest.raises(
+        AssertionError, match="cannot tell whether these codes end in a unit"
+    ):
+        _run(contract, "test_unit_components_are_found")
+    contract = _contract(
+        spec, dummy_values={"count": 1}, expected_unit_events=UNIT_EVENTS
+    )
+    _run(contract, "test_unit_components_are_found")
+    _run(contract, "test_unit_component_is_stripped_and_blank_is_unk")
+
+    # `ignored_events` leaves an event out; `unit_events` adds one discovery does not find.
+    contract = _contract(
+        UNIT_SPEC, ignored_events=["drugs/dose"], expected_unit_events=UNIT_EVENTS
+    )
+    with pytest.raises(AssertionError):
+        _run(contract, "test_unit_components_are_found")
+    spec = _with(UNIT_SPEC, "drugs", "dose", _metadata={})
+    assert "drugs/dose" not in {c.id for c in find_unit_components(spec)[0]}
+    contract = _contract(
+        spec, unit_events={"drugs/dose": "Dose Unit"}, expected_unit_events=UNIT_EVENTS
+    )
+    _run(contract, "test_unit_components_are_found")
+    _run(contract, "test_unit_component_is_stripped_and_blank_is_unk")
+    _, undecided = find_unit_components(UNIT_SPEC, unit_events={"labs/nope": "unit"})
+    assert undecided == {
+        "labs/nope": "unit_events names an event the spec does not have"
+    }
+
+    # A spec without unit components fails, unless it says so.
+    spec = {"patients": UNIT_SPEC["patients"]}
+    with pytest.raises(
+        AssertionError, match="no code in the spec ends in a unit column"
+    ):
+        _run(_contract(spec), "test_unit_components_are_found")
+    _run(_contract(spec, expected_unit_events=()), "test_unit_components_are_found")

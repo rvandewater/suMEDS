@@ -7,9 +7,11 @@ tests need, so each ETL does not keep its own copy:
 
 - `sumeds.testing` writes a local ontology source and reads a MEDS output. It
   needs only suMEDS's own dependencies.
-- `sumeds.testing.contracts` holds the contract tests as two pytest base
-  classes, `RulesContract` and `EnrichmentContract`. It needs pytest
-  (`pip install "sumeds[testing]"`, or pytest in the ETL's dev dependencies).
+- `sumeds.testing.contracts` holds the contract tests as three pytest base
+  classes, `RulesContract`, `EnrichmentContract` and `UnitComponentContract`.
+  It needs pytest, and `UnitComponentContract` also dftly
+  (`pip install "sumeds[testing]"`, or pytest in the ETL's dev dependencies
+  next to MEDS-Extract, which brings dftly).
 
 Both are versioned with suMEDS: an ETL's `sumeds>=X,<Y` pin also pins the
 contract it is tested against.
@@ -75,7 +77,7 @@ Subclass the contracts in the ETL's test suite and set what differs as class
 attributes. Each test can still be overridden, and each fixture replaced.
 
 ```python
-from sumeds.testing.contracts import EnrichmentContract, RulesContract
+from sumeds.testing.contracts import EnrichmentContract, RulesContract, UnitComponentContract
 
 class TestRules(RulesContract):
     rules_name = "ALOTT"  # the name of both the spec and the rules entry point
@@ -97,6 +99,10 @@ class TestEnrichment(EnrichmentContract):
     }
     expected_descriptions = {"DIAGNOSIS//ICD//10//I50.23": "Synthetic ICD10CM title I50.23"}
     unenriched_codes = ["DIAGNOSIS//ICD//10//I10", "FLOWSHEET//8"]
+
+
+class TestUnitComponents(UnitComponentContract):
+    spec = "ALOTT"  # the registered spec name (or a path to the spec)
 ```
 
 `EnrichmentContract` needs a `raw_dir` fixture of scope `class` or wider (the
@@ -160,5 +166,77 @@ class, and checks that:
 - `strict=true` makes a failed enrichment fail the run;
 - `offline=true` with an empty cache fails at once, without the network.
 
-The contracts do not render code templates from a spec: how a code is built
-from raw columns differs per ETL, so example codes stay in the ETL's own tests.
+`UnitComponentContract`: see [Unit components](#unit-components) below.
+
+Apart from the unit component, the contracts do not render code templates from
+a spec: how a code is built from raw columns differs per ETL, so example codes
+stay in the ETL's own tests.
+
+## Unit components
+
+A code whose last component is a unit (`LAB//<item>//<unit>`) carries that unit
+stripped of surrounding whitespace, and `UNK` where the row records none or a
+blank one, while the event's `_metadata._self.unit` stays the raw column.
+MEDS-Extract compares units stripped and drops blank ones when it writes
+`codes.parquet`, so a code that kept the whitespace would split one unit over
+several codes (` mg`, `mg`, `mg `), and a blank unit would give a code ending
+in whitespace (or in `//`) with no unit. An ETL builds the component with a
+`_table.cols` helper:
+
+```yaml
+labevents:
+  _table:
+    cols:
+      _value_unit: '(extract /(?s)\S(?:.*\S)?/ from $valueuom) ?? "UNK"'
+  lab:
+    code: f"LAB//{$itemid}//{$_value_unit}"
+    _metadata:
+      _self:
+        unit: $valueuom
+```
+
+`UnitComponentContract` checks this for every such code of a spec; the
+subclass names only the spec:
+
+```python
+from sumeds.testing.contracts import UnitComponentContract
+
+class TestUnitComponents(UnitComponentContract):
+    spec = "MIMIC-IV"  # a registered name, a path to the spec, or the parsed spec
+```
+
+**Discovery.** A table's unit columns are the raw columns its events'
+`_metadata` `unit` expressions read (`_self` or an external metadata table). An
+event's code ends in a unit when, with that column set to a probe value and
+every other column the code reads to `"1"`, the code ends in `//` and the probe,
+and the code reads the column through a `_table.cols` helper, or reads it
+itself while a `_self.unit` of the table passes it through unchanged. So
+`f"LAB//{$itemid}//{$_value_unit}"` counts, and so does an event of the same
+table without unit metadata of its own; `f"INTAKE_OUTPUT//{$cellpath}"`, whose
+unit is extracted from inside `cellpath`, does not, and neither does a code
+whose unit is a constant. `find_unit_components(spec)` returns what it finds.
+
+**Checks**, one test per event (named `table/event`), each evaluating the
+spec's own expressions with dftly as MEDS-Extract does (the helpers first, in
+`_table.cols` order) on the units `mg`, ` mg`, `mg `, `\tmg\n`, `mL / h`,
+`  `, the empty string and null:
+
+- `test_unit_component_is_stripped_and_blank_is_unk`: the codes end in `mg`
+  four times, `mL / h`, then `UNK` three times, after the same prefix;
+- `test_unit_metadata_stays_the_raw_column`: for events whose `_self.unit`
+  reads the column, the unit stays as recorded (` mg` stays ` mg`); a blank one
+  may be left out (null), and is never `UNK`;
+- `test_no_code_ends_in_a_raw_unit_column`: no code ends in the unit column as
+  recorded. A new ETL that writes `f"LAB//{$item}//{$unit}"` with
+  `_self.unit: $unit` fails here, with the event named;
+- `test_unit_components_are_found`: every candidate could be evaluated, and
+  at least one code ends in a unit (or exactly `expected_unit_events`).
+
+**Overrides**, as class attributes, for what discovery cannot decide:
+
+| Attribute | Does |
+|---|---|
+| `expected_unit_events` | the `table/event` ids discovery must find, to pin it (`()` for a spec without unit components) |
+| `unit_events` | `{"table/event": "raw unit column"}` for events discovery misses |
+| `ignored_events` | `table/event` ids to leave out |
+| `dummy_values` | `{column: value}` where a code needs a particular value to evaluate, such as `$count > 0` (`{"count": 1}`) |

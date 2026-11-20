@@ -474,6 +474,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dftly"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lark", marker = "python_full_version >= '3.11'" },
+    { name = "polars", marker = "python_full_version >= '3.11'" },
+    { name = "python-dateutil", marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/a7/61fee796452838ca43b0f44fea9ae7bb4a8c3e9bca758abff1075cca6bfd/dftly-0.7.0.tar.gz", hash = "sha256:c9e2c2d7d014cf5a97ffb4650177065ee1e04751973a36bbeb4671c59e61dde4", size = 122761, upload-time = "2026-08-05T17:50:56.792Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/df/1b6c41755441b7982060e3e66458c56cc8bde64e8570860c6b8df8f45c9e/dftly-0.7.0-py3-none-any.whl", hash = "sha256:8821d345635535d2023f6aac4434e99cfc544c7ada116ae4674559d77cf5b0b5", size = 64775, upload-time = "2026-08-05T17:50:55.394Z" },
+]
+
+[[package]]
 name = "distlib"
 version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2279,11 +2294,13 @@ rt64 = [
     { name = "polars", extra = ["rt64"] },
 ]
 testing = [
+    { name = "dftly", marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "dftly", marker = "python_full_version >= '3.11'" },
     { name = "mkdocs" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -2293,6 +2310,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dftly", marker = "python_full_version >= '3.11' and extra == 'testing'", specifier = ">=0.7" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.30" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.0" },
     { name = "meds", specifier = ">=0.4.1,<0.5" },
@@ -2307,6 +2325,7 @@ provides-extras = ["rt64", "notebook", "testing"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "dftly", marker = "python_full_version >= '3.11'", specifier = ">=0.7" },
     { name = "mkdocs", specifier = ">=1.6" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=8" },
