@@ -233,6 +233,18 @@ descriptions are chosen and units stated in descriptions; it replaces the
 ETL-local `<dataset>_unit_metadata` stages. See
 [Unit siblings](docs/unit_siblings.md).
 
+### Testing an ETL that uses suMEDS
+
+`sumeds.testing` writes a local ontology source in the published packs' layout
+(`write_ontology_source`), so an ETL tests its enrichment offline, and reads
+the output back. `sumeds.testing.contracts` holds the tests every such ETL
+shares, as pytest base classes: `RulesContract` (the rules are packaged,
+registered under the spec's name, load in suMEDS, and resolve the expected
+codes; the spec runs the post-stages in order) and `EnrichmentContract` (the
+enrichment only adds, records itself, soft-fails, can be retried, and fails
+under `strict`). An ETL subclasses them and sets its rules name, packs and
+expected parents. See [Testing an ETL](docs/testing.md).
+
 ## Python API
 
 ```python
