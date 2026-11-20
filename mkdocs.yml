@@ -12,6 +12,7 @@ nav:
       - Athena enrichment: athena.md
       - Rules and ontology packs: rules.md
   - Unit spellings (UCUM): units.md
+  - Unit siblings: unit_siblings.md
   - Python API: api.md
   - Privacy: privacy.md
   - Development: development.md

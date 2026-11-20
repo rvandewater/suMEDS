@@ -1,11 +1,11 @@
 """The ``sumeds_normalize_units`` stage: one UCUM spelling for the ``unit`` column of a MEDS ETL.
 
-A MEDS-Extract spec declares it after the ETL's own unit stage (which links unit-suffixed sibling
-codes by comparing a code's suffix with its recorded unit) and before ``sumeds_enrich``::
+A MEDS-Extract spec declares it after ``sumeds_link_unit_siblings`` (or the ETL's own unit stage)
+and before ``sumeds_enrich``::
 
     etl:
       post_stages:
-        - mc_med_unit_metadata
+        - sumeds_link_unit_siblings
         - sumeds_normalize_units
         - sumeds_enrich: {rules: MC-MED}
 

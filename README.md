@@ -202,13 +202,13 @@ MEDS ETLs write units as their sources spell them (`mg/dl`, `mg/dL`, `MG/DL`).
 The `sumeds_normalize_units` post-stage (or `suMEDS-normalize-units`) rewrites
 the `unit` column of `metadata/codes.parquet` as canonical, case-sensitive
 [UCUM](https://ucum.org/ucum) codes from one shared table, keeping each recorded
-spelling in `unit_source_value`. Codes are not changed. ETLs run it after their
-own unit stage and before `sumeds_enrich`:
+spelling in `unit_source_value`. Codes are not changed. ETLs run it after
+`sumeds_link_unit_siblings` and before `sumeds_enrich`:
 
 ```yaml
 etl:
   post_stages:
-    - <dataset>_unit_metadata
+    - sumeds_link_unit_siblings
     - sumeds_normalize_units
     - sumeds_enrich: {rules: <dataset>}
 ```
@@ -219,6 +219,19 @@ listed in the log. Case carries meaning (`G/l` is `10*9/L`, `g/l` is `g/L`), and
 words that do not say which unit they mean become annotations (`units` is
 `{units}`, `dose` is `{dose}`). `sumeds.to_ucum(spelling)` gives the mapping
 itself. See [Unit spellings](docs/units.md).
+
+### Unit siblings
+
+Where an ETL puts the unit in the code because an item has several units
+(`LAB//<item>//mg/dL`, `LAB//<item>//mmol/L`; MEDS-Extract writes one `unit`
+per code), the `sumeds_link_unit_siblings` post-stage (or
+`suMEDS-link-unit-siblings`) gives each such code the code without its unit
+(`LAB//<item>`) as a parent in `parent_codes`, and that stem a row of its own:
+the description and parents its siblings share, and no unit. A code ending in
+`UNK` (an unrecorded unit) joins its item's siblings. Options cover how stem
+descriptions are chosen and units stated in descriptions; it replaces the
+ETL-local `<dataset>_unit_metadata` stages. See
+[Unit siblings](docs/unit_siblings.md).
 
 ## Python API
 

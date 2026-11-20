@@ -11,14 +11,14 @@ Only the `unit` column changes. Codes keep their names: a code such as
 
 ## The `sumeds_normalize_units` stage
 
-A MEDS-Extract spec runs the stage after the ETL's own unit stage (which links
-unit-suffixed sibling codes to a stem by comparing a code's last component with
-its recorded unit) and before `sumeds_enrich`:
+A MEDS-Extract spec runs the stage after `sumeds_link_unit_siblings` (or the
+ETL's own unit stage; see [Unit siblings](unit_siblings.md)) and before
+`sumeds_enrich`:
 
 ```yaml
 etl:
   post_stages:
-    - mc_med_unit_metadata
+    - sumeds_link_unit_siblings
     - sumeds_normalize_units
     - sumeds_enrich: {rules: MC-MED}
 ```

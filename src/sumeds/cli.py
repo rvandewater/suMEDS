@@ -37,6 +37,7 @@ from .ontology import (
     registered_rules_path,
 )
 from .summary import summarize
+from .unit_siblings import DEFAULT_UNKNOWN_UNIT_COMPONENTS, link_unit_siblings_file
 from .units import normalize_units_file
 
 ENRICH_PROG = "suMEDS-enrich"
@@ -347,6 +348,109 @@ def normalize_units_main(argv: Sequence[str] | None = None) -> int:
         f"Wrote {args.output or args.input}: {counts['rewritten']:,} of "
         f"{counts['rows_with_unit']:,} units rewritten, "
         f"{counts['unknown_kept']:,} unknown kept"
+    )
+    return 0
+
+
+LINK_UNIT_SIBLINGS_PROG = "suMEDS-link-unit-siblings"
+
+
+def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
+    """Link the unit siblings of a MEDS ``codes.parquet``; return an exit code.
+
+    The input is a MEDS dataset root (its ``metadata/codes.parquet`` is changed in place) or a
+    ``codes.parquet`` file (in place, or to ``-o``). See :mod:`sumeds.unit_siblings`.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog=LINK_UNIT_SIBLINGS_PROG,
+        description="Give codes that differ only in their last (unit) component the code "
+        "without it as a parent in parent_codes, and that stem a row of its own.",
+    )
+    parser.add_argument(
+        "input", type=Path, help="a MEDS dataset root, or a codes.parquet file"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="where to write a codes.parquet given as input (default: in place)",
+    )
+    parser.add_argument(
+        "--unknown-unit-component",
+        dest="unknown_unit_components",
+        action="append",
+        metavar="COMPONENT",
+        help="a last code component that stands for an unrecorded unit (repeatable; default: "
+        + ", ".join(DEFAULT_UNKNOWN_UNIT_COMPONENTS)
+        + ")",
+    )
+    parser.add_argument(
+        "--no-unknown-unit-components",
+        action="store_true",
+        help="leave codes with an unknown-unit component out of sibling groups",
+    )
+    parser.add_argument(
+        "--stem-description",
+        choices=["shared", "without_unit"],
+        default="without_unit",
+        help="how a stem row's description is chosen (default: without_unit)",
+    )
+    parser.add_argument(
+        "--description-unit-pattern",
+        metavar="REGEX",
+        help="a unit stated in a description: group 'unit', or else group 1",
+    )
+    parser.add_argument(
+        "--description-unit",
+        dest="description_units",
+        action="append",
+        metavar="UNIT",
+        help="only these stated units count (repeatable; default: any unit-like one)",
+    )
+    parser.add_argument(
+        "--fill-units",
+        choices=["never", "missing", "unknown_component"],
+        default="missing",
+        help="which codes without a unit get the unit their description states "
+        "(default: missing)",
+    )
+    parser.add_argument("--version", action="version", version=version("suMEDS"))
+    args = parser.parse_args(argv)
+    if args.no_unknown_unit_components and args.unknown_unit_components:
+        parser.error(
+            "--no-unknown-unit-components and --unknown-unit-component exclude each other"
+        )
+    if args.input.is_dir():
+        if args.output is not None:
+            parser.error(
+                "a MEDS dataset root is changed in place; -o/--output is only for a file"
+            )
+        args.input = args.input / meds.code_metadata_filepath
+    if not args.input.is_file():
+        parser.error(f"{args.input} is not a file")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    unknown = (
+        []
+        if args.no_unknown_unit_components
+        else args.unknown_unit_components or list(DEFAULT_UNKNOWN_UNIT_COMPONENTS)
+    )
+    try:
+        counts = link_unit_siblings_file(
+            args.input,
+            args.output,
+            unknown_unit_components=unknown,
+            stem_description=args.stem_description,
+            description_unit_pattern=args.description_unit_pattern,
+            description_units=args.description_units,
+            fill_units=args.fill_units,
+        )
+    except Exception as exc:
+        parser.exit(1, f"{LINK_UNIT_SIBLINGS_PROG}: error: {exc}\n")
+    print(
+        f"Wrote {args.output or args.input}: {counts['sibling_codes']:,} codes in "
+        f"{counts['sibling_groups']:,} unit-sibling groups, "
+        f"{counts['stem_rows_added']:,} stem rows added"
     )
     return 0
 
