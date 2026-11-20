@@ -195,6 +195,35 @@ codes and keeps the recorded units in `unit_source_value`. The counts are
 default), every other column with its Arrow type; what the
 `sumeds_normalize_units` stage and `suMEDS-normalize-units` run.
 
+### `link_unit_siblings`
+
+```python
+link_unit_siblings(
+    df: polars.DataFrame,
+    *,
+    unknown_unit_components: Iterable[str] = ("UNK",),
+    link_unknown_units: bool = True,
+    stem_description: Literal["shared", "without_unit"] = "without_unit",
+    description_unit_pattern: str | re.Pattern | None = None,
+    description_units: Iterable[str] | None = None,
+    fill_units: Literal["never", "missing", "unknown_component"] = "missing",
+) -> tuple[polars.DataFrame, dict]
+```
+
+Gives codes that differ only in their last (unit) component the code without it
+as a parent in `parent_codes`, and that stem a row of its own; optionally fills
+missing units from units stated in descriptions. The counts are `with_unit`,
+`unit_suffixed`, `unknown_suffixed`, `sibling_groups`, `sibling_codes`,
+`parents_added`, `stem_rows_added`, `stem_rows_existing`, `description_units`,
+`description_units_rejected`, `description_units_filled` and
+`description_unit_conflicts`. See [Unit siblings](unit_siblings.md).
+
+### `link_unit_siblings_file(input_path, output_path=None, **options) -> dict`
+
+`link_unit_siblings` on a MEDS `codes.parquet`, written atomically (in place by
+default) and only if something changes, every column with its Arrow type; what
+the `sumeds_link_unit_siblings` stage and `suMEDS-link-unit-siblings` run.
+
 ## Lazy building blocks
 
 ### `scan_events(root, modifiers=()) -> polars.LazyFrame`

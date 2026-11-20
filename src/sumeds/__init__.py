@@ -13,6 +13,7 @@ from .scan import (
     scan_subject_splits,
 )
 from .summary import code_occurrences, summarize
+from .unit_siblings import link_unit_siblings, link_unit_siblings_file
 from .units import normalize_units, normalize_units_file, to_ucum
 
 __all__ = [
@@ -26,6 +27,8 @@ __all__ = [
     "enrich_file",
     "enrich_metadata",
     "event_files",
+    "link_unit_siblings",
+    "link_unit_siblings_file",
     "load_rules",
     "normalize_units",
     "normalize_units_file",

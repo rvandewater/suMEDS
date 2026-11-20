@@ -33,12 +33,14 @@ suMEDS = "sumeds.cli:main"
 suMEDS-enrich = "sumeds.cli:enrich_main"
 suMEDS-extract = "sumeds.extract:main"
 suMEDS-normalize-units = "sumeds.cli:normalize_units_main"
+suMEDS-link-unit-siblings = "sumeds.cli:link_unit_siblings_main"
 
-# The sumeds_enrich and sumeds_normalize_units post-stages, for MEDS-Extract specs
-# (MEDS-Extract >= 0.8.1).
+# The sumeds_enrich, sumeds_normalize_units and sumeds_link_unit_siblings post-stages, for
+# MEDS-Extract specs (MEDS-Extract >= 0.8.1).
 [project.entry-points."MEDS_transforms.stages"]
 sumeds_enrich = "sumeds.stage:main"
 sumeds_normalize_units = "sumeds.units_stage:main"
+sumeds_link_unit_siblings = "sumeds.unit_siblings_stage:main"
 
 [build-system]
 requires = ["uv_build>=0.11.15,<0.12.0"]
