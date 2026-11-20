@@ -2278,6 +2278,9 @@ notebook = [
 rt64 = [
     { name = "polars", extra = ["rt64"] },
 ]
+testing = [
+    { name = "pytest" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2296,10 +2299,11 @@ requires-dist = [
     { name = "polars", specifier = ">=1.30" },
     { name = "polars", extras = ["rt64"], marker = "extra == 'rt64'", specifier = ">=1.34" },
     { name = "pyarrow", specifier = ">=15" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
-provides-extras = ["rt64", "notebook"]
+provides-extras = ["rt64", "notebook", "testing"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,6 +1,8 @@
 # Python API
 
-All public objects can be imported directly from `sumeds`.
+All public objects can be imported directly from `sumeds`. Test helpers for ETL
+packages are in `sumeds.testing` and `sumeds.testing.contracts`; see
+[Testing an ETL](testing.md).
 
 ## High-level API
 

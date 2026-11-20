@@ -35,6 +35,13 @@ jobs:
           # The UCUM validator of tests/test_units.py (Python >= 3.11; skipped otherwise).
           pip install "ucumvert>=0.3.3; python_version >= '3.11'"
 
+      # The end-to-end tests (tests/test_stage.py, tests/test_unit_siblings.py and the
+      # EnrichmentContract of tests/test_testing.py) run meds-extract-run, which supports
+      # Python 3.11.4 to 3.13; they are skipped where it is not installed.
+      - name: Install MEDS-Extract for the end-to-end tests
+        if: ${{ matrix.python-version != '3.10' && matrix.python-version != '3.14' }}
+        run: pip install "meds-extract>=0.9.0,<0.10"
+
       - name: Check out the pinned ontology data release
         run: |
           REF=$(python -c "from sumeds.ontology import DEFAULT_REF; print(DEFAULT_REF)")

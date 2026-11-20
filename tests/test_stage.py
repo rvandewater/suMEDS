@@ -27,8 +27,9 @@ import pytest
 
 import sumeds.ontology
 from sumeds.cli import STAGE_OPTIONS, enrich_main, stage_argv
-from sumeds.ontology import INDEX_SCHEMA, PACK_SCHEMA, RULES_ENTRY_POINT_GROUP
+from sumeds.ontology import RULES_ENTRY_POINT_GROUP
 from sumeds.stage import DEFAULT_CONFIG, STAGE_NAME, _main
+from sumeds.testing import Pack, write_ontology_source
 
 RULES = (
     "schema: sumeds-rules/0.1\n"
@@ -57,39 +58,12 @@ def _sha(data: bytes) -> str:
 def packs(tmp_path: Path) -> Path:
     """A local ontology source with a two-shard ICD10CM pack."""
 
-    root = tmp_path / "ontologies"
-    (root / "ICD10CM" / "test").mkdir(parents=True)
-    shards = {}
-    for key, rows in PACK.items():
-        data = "code,description,parent\n" + "".join(
-            f"{c},{d},{p}\n" for c, d, p in rows
-        )
-        (root / "ICD10CM" / "test" / f"{key}.csv").write_text(data)
-        shards[key] = {"file": f"{key}.csv", "sha256": _sha(data.encode())}
-    manifest = json.dumps(
-        {
-            "schema": PACK_SCHEMA,
-            "vocabulary": "ICD10CM",
-            "release": "test",
-            "shard_key_length": 1,
-            "shards": shards,
-        }
-    ).encode()
-    (root / "ICD10CM" / "test" / "manifest.json").write_bytes(manifest)
-    (root / "index.json").write_text(
-        json.dumps(
-            {
-                "schema": INDEX_SCHEMA,
-                "vocabularies": {
-                    "ICD10CM": {
-                        "manifest": "ICD10CM/test/manifest.json",
-                        "sha256": _sha(manifest),
-                    }
-                },
-            }
-        )
+    rows = [row for shard in PACK.values() for row in shard]
+    pack = Pack(
+        {code: parent or None for code, _, parent in rows},
+        titles={code: description for code, description, _ in rows},
     )
-    return root
+    return write_ontology_source(tmp_path / "ontologies", {"ICD10CM": pack})
 
 
 # ------------------------------------------------------------------ unit tests

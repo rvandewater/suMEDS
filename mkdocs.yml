@@ -13,6 +13,7 @@ nav:
       - Rules and ontology packs: rules.md
   - Unit spellings (UCUM): units.md
   - Unit siblings: unit_siblings.md
+  - Testing an ETL: testing.md
   - Python API: api.md
   - Privacy: privacy.md
   - Development: development.md
