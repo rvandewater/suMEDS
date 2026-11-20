@@ -28,7 +28,8 @@ dependencies = [
 rt64 = ["polars[rt64]>=1.34"]
 notebook = ["jupyter>=1.0", "ipykernel>=6.30"]
 # `sumeds.testing.contracts`: the pytest contract tests for ETLs that use suMEDS's stages.
-testing = ["pytest>=8"]
+# `UnitComponentContract` evaluates the spec's expressions with dftly, as MEDS-Extract does.
+testing = ["pytest>=8", "dftly>=0.7; python_version >= '3.11'"]
 
 [project.scripts]
 suMEDS = "sumeds.cli:main"
@@ -53,6 +54,8 @@ dev = [
     "mkdocs>=1.6",
     "pre-commit>=4.0",
     "pytest>=8",
+    # `UnitComponentContract` evaluates a spec's expressions with dftly (tests/test_testing.py).
+    "dftly>=0.7; python_version >= '3.11'",
     "ruff>=0.15.22",
     # Checks that suMEDS's canonical unit spellings are valid UCUM (tests/test_units.py).
     "ucumvert>=0.3.3; python_version >= '3.11'",

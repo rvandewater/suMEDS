@@ -249,7 +249,10 @@ registered under the spec's name, load in suMEDS, and resolve the expected
 codes; the spec runs the post-stages in order) and `EnrichmentContract` (the
 enrichment only adds, records itself, soft-fails, can be retried, and fails
 under `strict`). An ETL subclasses them and sets its rules name, packs and
-expected parents. See [Testing an ETL](docs/testing.md).
+expected parents. `UnitComponentContract` needs only the spec's name: it finds
+every code whose last component is a unit and checks, with dftly, that the unit
+is stripped, that a blank or missing one gives `UNK`, and that the `unit`
+metadata stays the raw column. See [Testing an ETL](docs/testing.md).
 
 ## Python API
 

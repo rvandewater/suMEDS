@@ -34,6 +34,8 @@ jobs:
           pip install pytest pytest-cov --upgrade
           # The UCUM validator of tests/test_units.py (Python >= 3.11; skipped otherwise).
           pip install "ucumvert>=0.3.3; python_version >= '3.11'"
+          # UnitComponentContract (tests/test_testing.py) evaluates specs with dftly (Python >= 3.11).
+          pip install "dftly>=0.7; python_version >= '3.11'"
 
       # The end-to-end tests (tests/test_stage.py, tests/test_unit_siblings.py and the
       # EnrichmentContract of tests/test_testing.py) run meds-extract-run, which supports
