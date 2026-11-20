@@ -373,6 +373,177 @@ def test_without_a_unit_column() -> None:
     assert out.equals(df) and counts["sibling_groups"] == 0
 
 
+# ------------------------------------------------------------------ single unit codes
+
+
+def test_a_code_without_a_sibling_gets_its_stem_with_link_single_units() -> None:
+    df = _frame(
+        [
+            ("A", None, None),
+            ("I//START//x//mL/h", "Start x (mL/h)", "mL/h", ["ATC//B05"]),
+            ("I//START//y//g", "Start y", "g", None),
+            ("I//START//y//mg", "Start y", "mg", None),
+            ("V//t", "Temperature", "Cel"),  # its unit is not a component
+        ]
+    )
+    off, counts = link_unit_siblings(df)
+    assert counts["single_unit_codes"] == 0
+    assert _rows(off)["I//START//x//mL/h"]["parent_codes"] == ["ATC//B05"]
+
+    out, counts = link_unit_siblings(df, link_single_units=True)
+    rows = _rows(out)
+    assert rows["I//START//x//mL/h"]["parent_codes"] == ["ATC//B05", "I//START//x"]
+    assert rows["I//START//x"] == {
+        "code": "I//START//x",
+        "description": "Start x",  # without its unit
+        "unit": None,
+        "parent_codes": ["ATC//B05"],  # the one code decides
+    }
+    assert rows["I//START//y"]["description"] == "Start y"  # siblings as before
+    assert rows["V//t"]["parent_codes"] is None
+    assert out["code"].to_list() == [
+        "A",
+        "I//START//x",
+        "I//START//x//mL/h",
+        "I//START//y",
+        "I//START//y//g",
+        "I//START//y//mg",
+        "V//t",
+    ]
+    assert counts["sibling_groups"] == 1 and counts["sibling_codes"] == 2
+    assert counts["single_unit_codes"] == 1
+    assert counts["parents_added"] == 3 and counts["stem_rows_added"] == 2
+    # Idempotent, and the stem row is not unit-suffixed itself.
+    again, counts = link_unit_siblings(out, link_single_units=True)
+    assert again.equals(out) and counts["stem_rows_existing"] == 2
+
+
+def test_a_lone_unknown_unit_code_gets_no_stem() -> None:
+    """`X//UNK` alone is not linked, as two `UNK`-style codes alone are no group."""
+    df = _frame(
+        [
+            ("L//k//UNK", "Potassium", None),
+            ("L//p//UNK", "p", None),
+            ("L//p//NA", "p", None),
+            ("L//m//UNK", "m", "mg"),  # a unit from elsewhere: still unknown
+            ("L//na//UNK", "Sodium", None),
+            ("L//na//mmol/L", "Sodium", "mmol/L"),
+        ]
+    )
+    out, counts = link_unit_siblings(
+        df, unknown_unit_components=["UNK", "NA"], link_single_units=True
+    )
+    rows = _rows(out)
+    for code in ("L//k//UNK", "L//p//UNK", "L//p//NA", "L//m//UNK"):
+        assert rows[code]["parent_codes"] is None
+    assert not {"L//k", "L//p", "L//m"} & rows.keys()
+    assert rows["L//na//UNK"]["parent_codes"] == ["L//na"]
+    assert counts["sibling_groups"] == 1 and counts["single_unit_codes"] == 0
+
+    # Without unknown-unit linking, a real-unit code whose sibling is `UNK` stands alone.
+    alone, counts = link_unit_siblings(
+        df, link_unknown_units=False, link_single_units=True
+    )
+    rows = _rows(alone)
+    assert rows["L//na//mmol/L"]["parent_codes"] == ["L//na"]
+    assert rows["L//na//UNK"]["parent_codes"] is None
+    assert counts["single_unit_codes"] == 1 and counts["sibling_groups"] == 0
+
+
+@pytest.mark.parametrize(
+    ("code", "unit"),
+    [
+        ("X//a//mg", None),  # looks like a unit, but the code has none
+        ("X//a//mg", "g"),  # not its unit
+        ("X//a//MG", "mg"),  # case carries meaning
+        ("X//a//mg", ""),  # blank
+        ("//mg", "mg"),  # empty stem
+        ("X//a mg", "mg"),  # not a component
+        ("mg", "mg"),  # no component at all
+    ],
+)
+def test_a_single_code_is_linked_only_on_its_own_unit(
+    code: str, unit: str | None
+) -> None:
+    df = _frame([(code, "x", unit)])
+    out, counts = link_unit_siblings(df, link_single_units=True)
+    assert counts["single_unit_codes"] == 0
+    assert out.equals(df)
+
+
+def test_single_unit_stem_descriptions() -> None:
+    df = _frame([("X//a//mg", "Dose a [mg] (charted)", "mg")])
+    out, _ = link_unit_siblings(df, link_single_units=True)
+    assert _rows(out)["X//a"]["description"] == "Dose a (charted)"
+    shared, _ = link_unit_siblings(
+        df, link_single_units=True, stem_description="shared"
+    )
+    assert _rows(shared)["X//a"]["description"] == "Dose a [mg] (charted)"
+    for description, expected in [
+        ("Dose a", "Dose a"),  # no unit to remove
+        ("Dose mg/kg", "Dose mg/kg"),  # only inside another unit
+        ("(mg)", None),  # nothing left
+        (None, None),
+    ]:
+        out, _ = link_unit_siblings(
+            _frame([("X//a//mg", description, "mg")]), link_single_units=True
+        )
+        assert _rows(out)["X//a"]["description"] == expected
+
+    pattern = r"; unit: (?P<unit>.+?)(?= \(src\)$)"
+    df = _frame([("L//na//mg", "Lab: Na; unit: mg (src)", "mg")])
+    out, _ = link_unit_siblings(
+        df, link_single_units=True, description_unit_pattern=pattern
+    )
+    assert _rows(out)["L//na"]["description"] == "Lab: Na (src)"
+
+
+def test_single_unit_codes_with_units_filled_from_descriptions() -> None:
+    """A unit filled from a description is the code's unit, so it can link a single code; the
+    stated unit must pass `description_units` (or look like a unit) first."""
+    df = _frame(
+        [
+            ("V//height//cm", "Height (cm)", None),
+            ("V//glucose//serum", "Glucose (serum)", None),
+            ("V//dose//UNK", "Dose (mg)", None),
+        ]
+    )
+    out, counts = link_unit_siblings(
+        df,
+        link_single_units=True,
+        description_unit_pattern=PATTERN,
+        description_units=["cm", "mg"],
+    )
+    rows = _rows(out)
+    assert rows["V//height//cm"]["unit"] == "cm"
+    assert rows["V//height//cm"]["parent_codes"] == ["V//height"]
+    assert rows["V//height"]["description"] == "Height"
+    assert rows["V//glucose//serum"]["parent_codes"] is None  # not an allowed unit
+    assert rows["V//dose//UNK"]["unit"] == "mg"
+    assert rows["V//dose//UNK"]["parent_codes"] is None  # `UNK` alone
+    assert counts["single_unit_codes"] == 1
+
+    for fill in ("never", "unknown_component"):
+        never, counts = link_unit_siblings(
+            df,
+            link_single_units=True,
+            description_unit_pattern=PATTERN,
+            description_units=["cm", "mg"],
+            fill_units=fill,
+        )
+        assert counts["single_unit_codes"] == 0
+        assert _rows(never)["V//height//cm"]["parent_codes"] is None
+
+
+def test_single_unit_codes_after_normalize_units() -> None:
+    df = _frame([("X//a//mcg", "a (mcg)", "mcg")])
+    normalized, _ = normalize_units(df)
+    out, counts = link_unit_siblings(normalized, link_single_units=True)
+    assert counts["single_unit_codes"] == 1
+    assert _rows(out)["X//a//mcg"]["parent_codes"] == ["X//a"]
+    assert _rows(out)["X//a"]["description"] == "a"
+
+
 # ------------------------------------------------------------------ file and stage
 
 _MAP = pa.map_(pa.string(), pa.string())
@@ -571,6 +742,15 @@ def test_the_stage_passes_its_options(tmp_path: Path) -> None:
     assert rows["LAB//NA//UNK"]["parent_codes"] is None
     assert rows["LAB//NA"]["description"] is None
 
+    root = _meds_root(tmp_path / "single", _codes_table())
+    _main(_cfg(root, link_single_units=True))
+    rows = {
+        r["code"]: r
+        for r in pq.read_table(root / meds.code_metadata_filepath).to_pylist()
+    }
+    assert rows["VITAL//T"]["parent_codes"] == []  # `Cel` is not a component
+    assert rows["LAB//NA//mEq/L"]["parent_codes"] == ["LOINC//2951-2", "LAB//NA"]
+
 
 def test_stage_options_fill_defaults() -> None:
     assert stage_options(SimpleNamespace()) == DEFAULT_CONFIG
@@ -628,6 +808,31 @@ def test_the_cli(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         == 0
     )
     assert "2 codes in 1 unit-sibling groups" in capsys.readouterr().out
+    single = pa.table(
+        {
+            "code": ["X//a//mg", "X//b//g"],
+            "unit": ["mg", "g"],
+            "description": ["a", "b"],
+        }
+    )
+    pq.write_table(single, codes)
+    assert link_unit_siblings_main([str(codes), "-o", str(out)]) == 0
+    assert "0 codes in 0 unit-sibling groups, 0 stem rows" in capsys.readouterr().out
+    assert (
+        link_unit_siblings_main([str(codes), "-o", str(out), "--link-single-units"])
+        == 0
+    )
+    assert (
+        "0 codes in 0 unit-sibling groups, 2 codes without a sibling, 2 stem rows added"
+        in capsys.readouterr().out
+    )
+    assert pq.read_table(out).column("code").to_pylist() == [
+        "X//a",
+        "X//a//mg",
+        "X//b",
+        "X//b//g",
+    ]
+    pq.write_table(_codes_table(), codes)
     for bad in (
         [str(root), "-o", str(out)],
         [str(tmp_path / "missing")],

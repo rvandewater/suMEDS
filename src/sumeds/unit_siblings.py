@@ -19,6 +19,11 @@ as one item:
   the description
   the siblings share (see ``stem_description``). Every other column is null. An existing row for
   the stem is left as it is.
+- With ``link_single_units``, a unit-suffixed code with a real unit and no sibling is linked to its
+  stem as well, as a group of one: it decides the stem's parents, and its description without its
+  unit is the stem's (``stem_description="without_unit"``). A code ending in an unknown-unit
+  component is never linked on its own, as two such codes alone are no group: its last component
+  says nothing about which unit, or whether a unit, is meant.
 
 A description may state its code's unit (``description_unit_pattern``, a regular expression whose
 group ``unit``, or else group 1, is the unit). Such a unit fills a missing ``unit``
@@ -47,6 +52,16 @@ The ``sumeds_link_unit_siblings`` MEDS-Extract post-stage (:mod:`sumeds.unit_sib
 (1, 3, 1)
 >>> link_unit_siblings(out)[0].equals(out)
 True
+
+With ``link_single_units``, a code with a real unit and no sibling gets its stem too:
+
+>>> single, counts = link_unit_siblings(df, link_single_units=True)
+>>> for row in single.filter(pl.col("code").str.starts_with("LAB//K")).rows():
+...     print(row)
+('LAB//K//mmol/L', 'Potassium', 'mmol/L', ['LAB//K'])
+('LAB//K', 'Potassium', None, None)
+>>> counts["sibling_groups"], counts["single_unit_codes"], counts["stem_rows_added"]
+(1, 1, 2)
 """
 
 from __future__ import annotations
@@ -95,6 +110,7 @@ COUNT_KEYS = (
     "parents_added",
     "stem_rows_added",
     "stem_rows_existing",
+    "single_unit_codes",
     "description_units",
     "description_units_rejected",
     "description_units_filled",
@@ -213,6 +229,7 @@ def _plan(
     list_units: bool,
     unknown_unit_components: frozenset[str],
     link_unknown_units: bool,
+    link_single_units: bool,
     stem_description: str,
     description_unit_pattern: re.Pattern[str] | None,
     description_units: frozenset[str] | None,
@@ -286,13 +303,25 @@ def _plan(
     for i, stem in enumerate(stems):
         if stem is not None:
             groups.setdefault(stem, []).append(i)
+    # A group needs a code with a real unit: codes ending in `UNK` alone are never one. A single
+    # code is a group only with `link_single_units`.
+    min_codes = 1 if link_single_units else 2
     groups = {
         stem: members
         for stem, members in groups.items()
-        if len({codes[i] for i in members}) >= 2 and any(real[i] for i in members)
+        if len({codes[i] for i in members}) >= min_codes
+        and any(real[i] for i in members)
     }
-    counts["sibling_groups"] = len(groups)
-    counts["sibling_codes"] = sum(map(len, groups.values()))
+    single = {
+        stem
+        for stem, members in groups.items()
+        if len({codes[i] for i in members}) == 1
+    }
+    counts["sibling_groups"] = len(groups) - len(single)
+    counts["sibling_codes"] = sum(
+        len(members) for stem, members in groups.items() if stem not in single
+    )
+    counts["single_unit_codes"] = sum(len(groups[stem]) for stem in single)
 
     # 3. Each sibling gets its stem as a parent.
     new_parents = None if parents is None else list(parents)
@@ -321,6 +350,7 @@ def _plan(
                 stem_description,
                 description_unit_pattern,
                 description_units,
+                single=stem in single,
             )
         if new_parents is not None:
             # Only siblings with a real unit decide the stem's parents: an `UNK` sibling is linked
@@ -355,11 +385,17 @@ def _stem_description(
     rule: str,
     pattern: re.Pattern[str] | None,
     allowed: frozenset[str] | None,
+    *,
+    single: bool = False,
 ) -> str | None:
-    """The description of a new stem row (see :func:`link_unit_siblings`)."""
+    """The description of a new stem row (see :func:`link_unit_siblings`).
+
+    A single code's description is always stripped of its unit under ``without_unit``: it is not a
+    description several units share.
+    """
 
     shared = set(descriptions)
-    if len(shared) == 1:
+    if len(shared) == 1 and not (single and rule == "without_unit"):
         return shared.pop()
     if rule == "shared":
         return None
@@ -386,6 +422,7 @@ def _stem_description(
 def _resolve(
     unknown_unit_components: Iterable[str] = DEFAULT_UNKNOWN_UNIT_COMPONENTS,
     link_unknown_units: bool = True,
+    link_single_units: bool = False,
     stem_description: str = "without_unit",
     description_unit_pattern: str | re.Pattern[str] | None = None,
     description_units: Iterable[str] | None = None,
@@ -406,6 +443,7 @@ def _resolve(
     return {
         "unknown_unit_components": frozenset(unknown_unit_components or ()),
         "link_unknown_units": bool(link_unknown_units),
+        "link_single_units": bool(link_single_units),
         "stem_description": stem_description,
         "description_unit_pattern": _compile(description_unit_pattern),
         "description_units": None
@@ -420,6 +458,7 @@ def link_unit_siblings(
     *,
     unknown_unit_components: Iterable[str] = DEFAULT_UNKNOWN_UNIT_COMPONENTS,
     link_unknown_units: bool = True,
+    link_single_units: bool = False,
     stem_description: StemDescription = "without_unit",
     description_unit_pattern: str | re.Pattern[str] | None = None,
     description_units: Iterable[str] | None = None,
@@ -438,6 +477,10 @@ def link_unit_siblings(
         link_unknown_units: Whether a code ending in one of ``unknown_unit_components`` joins its
             item's unit siblings (if the item has a code with a real unit). ``False`` leaves these
             codes out, as the ETL-local stages did.
+        link_single_units: Whether a unit-suffixed code with a real unit and no sibling is linked
+            to its stem too (and the stem gets a row), so that every code ending in its unit has
+            its unit-free stem as a parent. A code ending in one of ``unknown_unit_components``
+            is still linked only with a real-unit sibling. ``False`` (default): only siblings are.
         stem_description: ``"shared"``: a stem row gets the siblings' description only if they all
             have the same one. ``"without_unit"`` (default): if they differ, each sibling's
             description without its unit (the span ``description_unit_pattern`` matches, else the
@@ -462,6 +505,7 @@ def link_unit_siblings(
     options = _resolve(
         unknown_unit_components,
         link_unknown_units,
+        link_single_units,
         stem_description,
         description_unit_pattern,
         description_units,
@@ -654,6 +698,12 @@ def _log_counts(counts: dict[str, int], path: Path) -> None:
             )
         ),
     )
+    if counts["single_unit_codes"]:
+        logger.info(
+            "Of these, %s codes ending in their unit have no sibling and got their stem as a "
+            "parent (link_single_units)",
+            f"{counts['single_unit_codes']:,}",
+        )
     if counts["description_units"] or counts["description_units_rejected"]:
         logger.info(
             "Units stated in descriptions: %s unit-like (%s filled a missing unit, %s disagree with "
