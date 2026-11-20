@@ -7,6 +7,8 @@ units therefore puts the unit in the code, as its last component:
 `unit`. The `sumeds_link_unit_siblings` stage makes such a family findable as
 one item again: each code gets the code without its unit (the *stem*,
 `LAB//<item>`) as a parent in `parent_codes`, and the stem gets a row of its own.
+With `link_single_units`, so does every code that ends in its unit, also when
+the item has only one unit.
 
 Before suMEDS 0.6.6 every ETL carried its own copy of this step
 (`<dataset>_unit_metadata`); the shared stage replaces them.
@@ -34,6 +36,7 @@ Options are stage keys, as for `sumeds_enrich`; every key is optional:
     - sumeds_link_unit_siblings:
         unknown_unit_components: [UNK]   # default
         link_unknown_units: true         # default
+        link_single_units: false         # default
         stem_description: without_unit   # default; or shared
         description_unit_pattern: '\s[(\[]([^()\[\]]+)[)\]]\s*$'
         description_units: [cm, kg, mL]  # default: any unit-like spelling
@@ -66,7 +69,35 @@ code whose last component is in `unknown_unit_components` (`UNK`, an ETL's
 **Sibling groups.** Two or more distinct unit-suffixed codes with the same stem,
 at least one of them with a real unit, are unit siblings. Two `UNK`-style codes
 alone are never a group, and a unit-suffixed code without a sibling is left as
-it is.
+it is, unless `link_single_units` is set (next paragraph).
+
+**Single unit codes (`link_single_units`).** With `link_single_units: true`, a
+unit-suffixed code with a real unit (its last component is its `unit_source_value`
+or `unit`) and no sibling is a group of one: it gets its stem as a parent and
+the stem gets a row, by the same rules as below. Then every code that ends in
+its unit has a unit-free stem, whether its item has one unit or several. That is
+what a code family needs when its codes always end in their unit and are matched
+without it: an interval start `INFUSION//START//<item>//mL/h` pairs with its end
+`INFUSION//END//<item>//mL` through their stems `INFUSION//START//<item>` and
+`INFUSION//END//<item>`.
+
+- A code ending in an unknown-unit component (`UNK`) alone still gets no stem,
+  as two such codes alone are no group: `UNK` says nothing about which unit, or
+  whether any unit, is meant (`GENDER//UNK`, `ROUTE//UNK`). Such a code gets
+  its stem only with a real-unit sibling and `link_unknown_units: true`. With
+  `link_unknown_units: false`, a real-unit code whose only sibling ends in `UNK`
+  is linked on its own and the `UNK` code is not.
+- A code is linked only on its own unit, as always: a last component that looks
+  like a unit (`X//a//mg`) but is not the code's `unit` (none, `g`, or `MG`)
+  gives no stem. A unit filled from the description (`fill_units`) is the
+  code's unit, so it can link a single code; restrict the stated units with
+  `description_units`, or fill only `UNK` codes (`fill_units: unknown_component`).
+- The single code decides the stem's parents (its own, the stem left out). Its
+  description without its unit is the stem's under `without_unit` (the span
+  `description_unit_pattern` matches, else the last mention of its unit, else
+  the description as it is); under `shared` the stem gets the code's description
+  as it is.
+- The default (`false`) is the behaviour before this option.
 
 **Parents.** Each sibling gets its stem appended to `parent_codes`, after the
 parents it already has (vocabulary parents stay first), and only if it is not
@@ -107,8 +138,9 @@ order if the file is sorted by code (else appended). The result is validated
 against `meds.CodeMetadataSchema` and written atomically. A file without
 `unit`, or without siblings, is not rewritten, and a second run changes
 nothing. The stage logs the counts: codes with a unit, unit-suffixed and
-unknown-unit codes, sibling groups and codes, parents added, stem rows added or
-already present, and units filled from descriptions.
+unknown-unit codes, sibling groups and codes, codes linked without a sibling,
+parents added, stem rows added or already present, and units filled from
+descriptions.
 
 ## Migrating from an ETL's own stage
 

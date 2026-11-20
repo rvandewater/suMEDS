@@ -228,9 +228,12 @@ per code), the `sumeds_link_unit_siblings` post-stage (or
 `suMEDS-link-unit-siblings`) gives each such code the code without its unit
 (`LAB//<item>`) as a parent in `parent_codes`, and that stem a row of its own:
 the description and parents its siblings share, and no unit. A code ending in
-`UNK` (an unrecorded unit) joins its item's siblings. Options cover how stem
-descriptions are chosen and units stated in descriptions; it replaces the
-ETL-local `<dataset>_unit_metadata` stages. See
+`UNK` (an unrecorded unit) joins its item's siblings. With
+`link_single_units: true`, every code that ends in its unit gets its stem, also
+when its item has a single unit (for families whose codes always end in their
+unit, such as interval starts and ends that pair by their unit-free stem).
+Options cover how stem descriptions are chosen and units stated in
+descriptions; it replaces the ETL-local `<dataset>_unit_metadata` stages. See
 [Unit siblings](docs/unit_siblings.md).
 
 ### Testing an ETL that uses suMEDS

@@ -391,6 +391,11 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
         help="leave codes with an unknown-unit component out of sibling groups",
     )
     parser.add_argument(
+        "--link-single-units",
+        action="store_true",
+        help="also give a code ending in its (recorded) unit its stem when it has no sibling",
+    )
+    parser.add_argument(
         "--stem-description",
         choices=["shared", "without_unit"],
         default="without_unit",
@@ -440,6 +445,7 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
             args.input,
             args.output,
             unknown_unit_components=unknown,
+            link_single_units=args.link_single_units,
             stem_description=args.stem_description,
             description_unit_pattern=args.description_unit_pattern,
             description_units=args.description_units,
@@ -450,7 +456,12 @@ def link_unit_siblings_main(argv: Sequence[str] | None = None) -> int:
     print(
         f"Wrote {args.output or args.input}: {counts['sibling_codes']:,} codes in "
         f"{counts['sibling_groups']:,} unit-sibling groups, "
-        f"{counts['stem_rows_added']:,} stem rows added"
+        + (
+            f"{counts['single_unit_codes']:,} codes without a sibling, "
+            if args.link_single_units
+            else ""
+        )
+        + f"{counts['stem_rows_added']:,} stem rows added"
     )
     return 0
 

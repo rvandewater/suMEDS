@@ -15,13 +15,15 @@ Options are stage keys, as for ``sumeds_enrich``::
         - sumeds_link_unit_siblings:
             unknown_unit_components: [UNK]
             link_unknown_units: true
+            link_single_units: false
             stem_description: without_unit
             description_unit_pattern: '\\s[(\\[]([^()\\[\\]]+)[)\\]]\\s*$'
             description_units: [cm, kg, mL]
             fill_units: unknown_component
 
 Codes sharing a stem with one another (``LAB//<item>//mg/dL``, ``LAB//<item>//mmol/L``) get the stem
-as a parent, and the stem a row of its own (:mod:`sumeds.unit_siblings`). Without a ``unit`` column
+as a parent, and the stem a row of its own (:mod:`sumeds.unit_siblings`); with
+``link_single_units``, so does a code ending in its unit without such a sibling. Without a ``unit`` column
 the file is left as it is, and running the stage twice changes nothing. The stage is registered in
 the ``MEDS_transforms.stages`` entry-point group; without MEDS-Transforms this module imports, but
 registers nothing.
@@ -41,6 +43,7 @@ STAGE_NAME = "sumeds_link_unit_siblings"
 DEFAULT_CONFIG: dict[str, Any] = {
     "unknown_unit_components": list(DEFAULT_UNKNOWN_UNIT_COMPONENTS),
     "link_unknown_units": True,
+    "link_single_units": False,
     "stem_description": "without_unit",
     "description_unit_pattern": None,
     "description_units": None,
@@ -55,7 +58,7 @@ def stage_options(stage_cfg: Any) -> dict[str, Any]:
     >>> stage_options(SimpleNamespace(unknown_unit_components=("UNK", "NA"), fill_units="never"))
     ... # doctest: +NORMALIZE_WHITESPACE
     {'unknown_unit_components': ['UNK', 'NA'], 'link_unknown_units': True,
-     'stem_description': 'without_unit',
+     'link_single_units': False, 'stem_description': 'without_unit',
      'description_unit_pattern': None, 'description_units': None, 'fill_units': 'never'}
     """
 
