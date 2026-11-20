@@ -74,8 +74,9 @@ there yet. Existing parents are not reordered or deduplicated.
 `parent_codes` keeps its Arrow type; it is added as `list<string>` if missing.
 
 **Stem rows.** A stem that is not already a code gets a row: `unit` null, the
-parents every sibling shares (in the first sibling's order, deduplicated, the
-stem itself left out; null if none), every other column null (`code_template`,
+parents every sibling with a real unit shares (in the first such sibling's order,
+deduplicated, the stem itself left out; null if none; an `UNK` sibling is linked
+to the stem but does not narrow its parents), every other column null (`code_template`,
 `unit_source_value`, suMEDS's columns), and a description:
 
 - `shared`: the siblings' description if they all have the same one, else null;
