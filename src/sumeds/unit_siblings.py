@@ -14,7 +14,9 @@ as one item:
   unit, are **unit siblings**. Each gets the stem appended to its ``parent_codes`` (after the
   parents it has; never twice).
 - A stem that is not already a code gets a row of its own: no ``unit``, the parents every sibling
-  shares (the first sibling's order, the stem itself left out; null if none), and the description
+  with a real unit shares (siblings whose unit is unrecorded, ``UNK``, are linked but do not narrow
+  the stem's parents; the first such sibling's order, the stem itself left out; null if none), and
+  the description
   the siblings share (see ``stem_description``). Every other column is null. An existing row for
   the stem is left as it is.
 
@@ -321,8 +323,12 @@ def _plan(
                 description_units,
             )
         if new_parents is not None:
+            # Only siblings with a real unit decide the stem's parents: an `UNK` sibling is linked
+            # to the stem but must not drop a parent the real-unit siblings share.
             lists = [
-                [p for p in _string_list(new_parents[i]) if p != stem] for i in members
+                [p for p in _string_list(new_parents[i]) if p != stem]
+                for i in members
+                if real[i]
             ]
             shared = [
                 p

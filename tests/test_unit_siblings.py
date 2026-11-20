@@ -85,6 +85,23 @@ def test_a_sorted_frame_stays_sorted() -> None:
     assert out["code"].to_list() == ["A", "X//a", "X//a//g", "X//a//mg"]
 
 
+def test_an_unknown_unit_sibling_does_not_narrow_the_stem_parents() -> None:
+    """An `UNK` sibling is linked to the stem, but the stem keeps the parents its real-unit siblings
+    share, even when the `UNK` sibling has other ones."""
+    df = _frame(
+        [
+            ("M//d//mg", "Drug d", "mg", ["NDC/1"]),
+            ("M//d//mcg", "Drug d", "mcg", ["NDC/1"]),
+            ("M//d//UNK", "Drug d", None, ["NDC/2"]),
+        ]
+    )
+    out, counts = link_unit_siblings(df)
+    rows = _rows(out)
+    assert rows["M//d//UNK"]["parent_codes"] == ["NDC/2", "M//d"]
+    assert rows["M//d"]["parent_codes"] == ["NDC/1"]
+    assert counts["sibling_codes"] == 3
+
+
 def test_parent_codes_is_created_when_needed() -> None:
     df = _frame([("X//a//g", "x", "g"), ("X//a//mg", "x", "mg")], parents=False)
     out, _ = link_unit_siblings(df)
@@ -417,7 +434,8 @@ def test_link_unit_siblings_file_keeps_types_and_order(tmp_path: Path) -> None:
     assert stem == {
         "code": "LAB//NA",
         "description": "Sodium",
-        "parent_codes": None,  # not every sibling has LOINC//2951-2
+        # Both real-unit siblings have LOINC//2951-2; the UNK sibling does not narrow it.
+        "parent_codes": ["LOINC//2951-2"],
         "code_template": None,
         "unit": None,
         "names": None,
