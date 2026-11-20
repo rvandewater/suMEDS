@@ -8,7 +8,8 @@ units therefore puts the unit in the code, as its last component:
 one item again: each code gets the code without its unit (the *stem*,
 `LAB//<item>`) as a parent in `parent_codes`, and the stem gets a row of its own.
 With `link_single_units`, so does every code that ends in its unit, also when
-the item has only one unit.
+the item has only one unit, and with `unknown_unit_prefixes` also a lone code
+ending in `UNK` in the listed code families.
 
 Before suMEDS 0.6.6 every ETL carried its own copy of this step
 (`<dataset>_unit_metadata`); the shared stage replaces them.
@@ -37,6 +38,7 @@ Options are stage keys, as for `sumeds_enrich`; every key is optional:
         unknown_unit_components: [UNK]   # default
         link_unknown_units: true         # default
         link_single_units: false         # default
+        unknown_unit_prefixes: []        # default; needs link_single_units: true
         stem_description: without_unit   # default; or shared
         description_unit_pattern: '\s[(\[]([^()\[\]]+)[)\]]\s*$'
         description_units: [cm, kg, mL]  # default: any unit-like spelling
@@ -84,7 +86,8 @@ without it: an interval start `INFUSION//START//<item>//mL/h` pairs with its end
 - A code ending in an unknown-unit component (`UNK`) alone still gets no stem,
   as two such codes alone are no group: `UNK` says nothing about which unit, or
   whether any unit, is meant (`GENDER//UNK`, `ROUTE//UNK`). Such a code gets
-  its stem only with a real-unit sibling and `link_unknown_units: true`. With
+  its stem only with a real-unit sibling and `link_unknown_units: true`, or in
+  a family listed in `unknown_unit_prefixes` (next paragraph). With
   `link_unknown_units: false`, a real-unit code whose only sibling ends in `UNK`
   is linked on its own and the `UNK` code is not.
 - A code is linked only on its own unit, as always: a last component that looks
@@ -98,6 +101,42 @@ without it: an interval start `INFUSION//START//<item>//mL/h` pairs with its end
   the description as it is); under `shared` the stem gets the code's description
   as it is.
 - The default (`false`) is the behaviour before this option.
+
+**Unknown units in listed families (`unknown_unit_prefixes`).** Some code
+families always end in a unit, and write `UNK` where the source recorded none:
+an infusion given as a bolus has no rate, so its start is
+`INFUSION//START//<item>//UNK`. There `UNK` is a unit placeholder, and the
+start still has to pair with `INFUSION//END//<item>//mL` by its stem. List
+such families as code prefixes:
+
+```yaml
+    - sumeds_link_unit_siblings:
+        link_single_units: true
+        unknown_unit_prefixes: [INFUSION//START//, INFUSION//END//]
+```
+
+- A code ending in an unknown-unit component whose **stem** starts with one of
+  the prefixes is linked to its stem also without a real-unit sibling.
+  `INFUSION//START//` matches `INFUSION//START//7//UNK` (stem
+  `INFUSION//START//7`), not `INFUSION//START//UNK` (stem `INFUSION//START`).
+  Write each prefix with its trailing `//`: `MEDICATION//START` would also match
+  `MEDICATION//STARTED//…`.
+- Outside the prefixes nothing changes: `GENDER//UNK` or `DIAGNOSIS//UNK`
+  alone still get no stem, as there `UNK` is an unknown value, not an unknown
+  unit.
+- Such a stem's row takes the code's own parents (if several unknown-unit
+  spellings share the stem, the parents they all share) and its description
+  without `UNK` under `without_unit`. With a real-unit sibling, the group is an
+  ordinary sibling group, as before.
+- It **needs `link_single_units: true`** (and `link_unknown_units: true`, the
+  default, and some `unknown_unit_components`); otherwise the stage fails with
+  an error. Its purpose is that every code of a family gets a stem; without
+  single linking, a lone `//mg` start would stay without one while a lone
+  `//UNK` start got one. With `link_unknown_units: false`, an `UNK` code is
+  never unit-suffixed, so the prefixes could not apply.
+- The default (empty) is the behaviour before this option. Codes linked this
+  way are counted as `unknown_unit_prefix_codes`, apart from `sibling_codes`
+  and `single_unit_codes`.
 
 **Parents.** Each sibling gets its stem appended to `parent_codes`, after the
 parents it already has (vocabulary parents stay first), and only if it is not
@@ -138,8 +177,8 @@ order if the file is sorted by code (else appended). The result is validated
 against `meds.CodeMetadataSchema` and written atomically. A file without
 `unit`, or without siblings, is not rewritten, and a second run changes
 nothing. The stage logs the counts: codes with a unit, unit-suffixed and
-unknown-unit codes, sibling groups and codes, codes linked without a sibling,
-parents added, stem rows added or already present, and units filled from
+unknown-unit codes, sibling groups and codes, codes linked without a sibling
+(with a real unit, and under `unknown_unit_prefixes`), parents added, stem rows added or already present, and units filled from
 descriptions.
 
 ## Migrating from an ETL's own stage
