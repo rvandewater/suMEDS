@@ -149,10 +149,12 @@ class, and checks that:
   a test pack is named with its title, `expected_descriptions` hold, and
   `unenriched_codes` keep the plain description and parents;
 - `dataset.json` records the enrichment: `enriched`, the rules name, the
-  `local` source, and the coverage counts of the plain and enriched tables;
+  `local` source, no Athena, and the coverage counts of the plain and enriched
+  tables;
 - the plain build ran no `sumeds_enrich` and records nothing;
 - without packs (`SUMEDS_ONTOLOGY_SOURCE` at an empty directory) the run
-  succeeds with the plain `codes.parquet` and a failure record; running the ETL
+  succeeds with the plain `codes.parquet`, a failure record, and the retry
+  command in the pipeline log; running the ETL
   again does not retry, and `suMEDS-enrich OUT --ontology-source DIR` then
   gives the same table and record as a direct run;
 - `strict=true` makes a failed enrichment fail the run;

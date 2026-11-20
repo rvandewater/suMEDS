@@ -439,6 +439,7 @@ class EnrichmentContract:
         assert record["enriched"] is True
         assert record["rules"] == self.rules_name
         assert record["ontology_source"] == "local"
+        assert record["athena"] is False
         assert record["coverage"] == {
             "codes": len(enriched_codes),
             "described": [
@@ -487,6 +488,11 @@ class EnrichmentContract:
         assert record["error"].startswith("OntologyPackError")
         assert record["retry"].startswith("suMEDS-enrich <MEDS_ROOT>")
         assert (output_dir / ".logs" / "sumeds_enrich.done").exists()
+        log = output_dir / ".logs" / "pipeline.log"
+        if (
+            log.exists()
+        ):  # the stage's warning, with the command to retry, goes to the pipeline log
+            assert f"suMEDS-enrich {output_dir}" in log.read_text()
 
         self.run_etl(
             output_dir, raw_dir, stage_overrides(ontology_source=ontology_source)
