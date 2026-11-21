@@ -9,8 +9,10 @@ MEDS-Extract (>= 0.9), like the end-to-end tests of ``test_stage.py``.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import os
+import re
 import sys
 from collections.abc import Iterator
 from importlib.metadata import entry_points
@@ -36,6 +38,7 @@ from sumeds.testing.contracts import (
     EnrichmentContract,
     RulesContract,
     UnitComponentContract,
+    check_units_in_code,
     find_unit_components,
 )
 
@@ -592,3 +595,134 @@ def test_overrides_and_undecided_events() -> None:
     ):
         _run(_contract(spec), "test_unit_components_are_found")
     _run(_contract(spec, expected_unit_events=()), "test_unit_components_are_found")
+
+
+# ------------------------------------------------------------- require_unit_in_code
+
+#: The verdict on each event of UNIT_SPEC with a `_self.unit`; `drugs/dose` reads its unit from an
+#: external metadata table and is not checked.
+UNIT_IN_CODE_VERDICTS = {
+    "labs/lab_result": "in code",
+    "flowsheet/row": "derived",
+    "patients/weight": "fixed",
+}
+
+
+def _verdicts(spec: dict, **kwargs) -> dict[str, str]:
+    return {
+        k: verdict for k, (verdict, _) in check_units_in_code(spec, **kwargs).items()
+    }
+
+
+@_needs_dftly
+class TestRequireUnitInCode(UnitComponentContract):
+    spec = UNIT_SPEC
+    expected_unit_events = UNIT_EVENTS
+    require_unit_in_code = True
+
+
+@_needs_dftly
+def test_require_unit_in_code_is_off_by_default() -> None:
+    spec = _with(UNIT_SPEC, "labs", "lab_priority")
+    spec["labs"]["lab_priority"]["_metadata"] = {"_self": {"unit": "$unit"}}
+    with pytest.raises(pytest.skip.Exception, match="require_unit_in_code is off"):
+        _run(_contract(spec), "test_row_units_are_in_the_code")
+
+
+@_needs_dftly
+def test_units_in_code_skip_fixed_derived_and_external_units() -> None:
+    """A constant unit, a unit extracted from a label the code carries (in its last component, as
+    MIMIC-IV's `omr`) or chosen by a column the code carries elsewhere, and a unit from an external
+    metadata table all have one unit per code without ending the code in it."""
+    assert _verdicts(UNIT_SPEC) == UNIT_IN_CODE_VERDICTS
+    spec = copy.deepcopy(UNIT_SPEC)
+    spec["flowsheet"]["vital"] = {
+        "code": 'f"VITAL//{$measure}//{$source}"',
+        "time": "$t",
+        "_metadata": {
+            "_self": {
+                "unit": '"%" if $measure == "SpO2" else "mm[Hg]" if $measure == "SBP"'
+            }
+        },
+    }
+    # MIMIC-IV's `omr`: blood pressures (`120/80`) are other events, so a helper is the condition.
+    spec["omr"] = {
+        "_table": {
+            "cols": {"systolic": "extract group 1 of /^([0-9]+)\\/[0-9]+$/ from $text"}
+        }
+    }
+    spec["omr"]["omr"] = {
+        "code": '$name if ($systolic ?? "") == ""',
+        "time": "$t",
+        "_metadata": {
+            "_self": {
+                "unit": "extract group 1 of /^(?:Weight|Height) \\(([^)]+)\\)$/ from $name"
+            }
+        },
+    }
+    assert _verdicts(spec) == {
+        **UNIT_IN_CODE_VERDICTS,
+        "flowsheet/vital": "derived",
+        "omr/omr": "derived",
+    }
+    _run(_contract(spec, require_unit_in_code=True), "test_row_units_are_in_the_code")
+
+
+def _missing(code: str) -> dict:
+    spec = _with(UNIT_SPEC, "labs", "lab_priority", code=code)
+    spec["labs"]["lab_priority"]["_metadata"] = {"_self": {"unit": "$unit"}}
+    return spec
+
+
+@pytest.mark.parametrize(
+    ("code", "detail"),
+    [
+        # The code does not read the unit column at all.
+        (
+            "f\"LAB//PRIORITY//{$priority ?? 'UNK'}\"",
+            r"reads \$unit, which the code does not",
+        ),
+        # It reads it only in a condition: `mg` and `kg` give one code.
+        (
+            "f\"LAB//PRIORITY//{$priority}\" if $unit != ''",
+            r"the code 'LAB//PRIORITY//1' gets the units \[.*'kg'.*'mg'.*\] from \$unit",
+        ),
+    ],
+)
+@_needs_dftly
+def test_a_row_unit_missing_from_the_code_fails(code: str, detail: str) -> None:
+    spec = _missing(code)
+    assert _verdicts(spec)["labs/lab_priority"] == "not in code"
+    contract = _contract(spec, require_unit_in_code=True)
+    with pytest.raises(AssertionError) as failure:
+        _run(contract, "test_row_units_are_in_the_code")
+    message = str(failure.value)
+    assert re.search(r"labs/lab_priority: .*" + detail, message), message
+    assert "_table.cols" in message and "ignored_events" in message
+
+    # Ending the code in the unit through a stripping helper passes, as does ignoring the event.
+    fixed = _missing('f"LAB//PRIORITY//{$priority}//{$_value_unit}"')
+    assert _verdicts(fixed)["labs/lab_priority"] == "in code"
+    _run(_contract(fixed, require_unit_in_code=True), "test_row_units_are_in_the_code")
+    ignored = {"labs/lab_priority": "one unit per priority in this source"}
+    assert _verdicts(spec, ignored_events=ignored)["labs/lab_priority"] == "ignored"
+    _run(
+        _contract(spec, require_unit_in_code=True, ignored_events=ignored),
+        "test_row_units_are_in_the_code",
+    )
+
+
+@_needs_dftly
+def test_a_code_no_probe_gives_is_undecided() -> None:
+    """A code condition the dummy values fail leaves no code to compare: set `dummy_values`."""
+    spec = _missing("f\"LAB//PRIORITY//{$unit}//{$priority}\" if $priority == 'STAT'")
+    verdict, detail = check_units_in_code(spec)["labs/lab_priority"]
+    assert verdict == "undecided" and "set dummy_values" in detail
+    with pytest.raises(AssertionError, match="labs/lab_priority: no probe of"):
+        _run(
+            _contract(spec, require_unit_in_code=True), "test_row_units_are_in_the_code"
+        )
+    assert (
+        _verdicts(spec, dummy_values={"priority": "STAT"})["labs/lab_priority"]
+        == "derived"
+    )
